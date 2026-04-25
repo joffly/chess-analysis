@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -20,8 +21,6 @@ import com.chess.analyzer.model.GameData;
 import com.chess.analyzer.model.MoveEntry;
 import com.github.bhlangonijr.chesslib.Board;
 import com.github.bhlangonijr.chesslib.Piece;
-import com.github.bhlangonijr.chesslib.PieceType;
-import com.github.bhlangonijr.chesslib.Square;
 import com.github.bhlangonijr.chesslib.game.Game;
 import com.github.bhlangonijr.chesslib.game.Player;
 import com.github.bhlangonijr.chesslib.move.Move;
@@ -54,6 +53,7 @@ public class PgnService {
     }
 
     private List<GameData> parseContent(String pgnContent) throws Exception {
+        // Pré-extrai textos de lances antes do PgnHolder consumir o conteúdo
         Map<Integer, String> rawMoveTexts = extractRawMoveTexts(pgnContent);
 
         PgnHolder pgn = new PgnHolder("-");
@@ -79,17 +79,25 @@ public class PgnService {
     }
 
     /**
-     * Extrai o texto de lances de cada partida diretamente do conteúdo PGN bruto.
+     * Extrai o texto de lances de cada partida diretamente do conteúdo PGN bruto,
+     * antes de qualquer processamento pelo PgnHolder. Isso garante disponibilidade
+     * mesmo em partidas [Variant "From Position"] onde game.getMoveText() retorna
+     * null antes de loadMoveText().
      */
     private Map<Integer, String> extractRawMoveTexts(String pgnContent) {
         Map<Integer, String> map = new LinkedHashMap<>();
+        // Divide em blocos por linha em branco seguida de '[' (início de nova partida)
+        // ou pelo padrão de separação padrão PGN
         String[] blocks = pgnContent.split("\n\\s*\n(?=\\[)");
         int gameIndex = 0;
         for (String block : blocks) {
             block = block.trim();
             if (block.isEmpty()) continue;
+
+            // Encontra o fim dos headers: última ocorrência de ']'
             int lastBracket = block.lastIndexOf(']');
             if (lastBracket < 0) continue;
+
             String moves = block.substring(lastBracket + 1).trim();
             if (!moves.isEmpty()) {
                 map.put(gameIndex, moves);
@@ -100,6 +108,9 @@ public class PgnService {
     }
 
     private GameData convertGame(int index, Game game, PgnHolder pgn, String rawMoveText) throws Exception {
+
+        // rawMoveText já foi capturado do PGN bruto em parseContent — não depende de
+        // game.getMoveText() que pode ser null em partidas From Position (Lichess)
         game.loadMoveText();
 
         // ── Tags ──────────────────────────────────────────────────
@@ -135,189 +146,122 @@ public class PgnService {
             setupFen = START_FEN;
         }
 
-        // ── Obtém lista de SANs ─────────────────────────────────────
-        List<String> sans = resolveSans(index, game, setupFen, rawMoveText);
-        if (sans == null || sans.isEmpty()) {
+        // ── MoveList com FEN correta ──────────────────────────────
+        // FIX: resolveHalfMoves retorna null quando todas as tentativas falham,
+        // em vez de retornar os Move objects incompatíveis do game.getHalfMoves().
+        MoveList halfMoves = resolveHalfMoves(index, game, setupFen, rawMoveText);
+        if (halfMoves == null) {
             log.error("Partida {}: impossível resolver lances para FEN='{}'. Partida ignorada.", index, setupFen);
             return new GameData(index, tags, setupFen, List.of());
         }
 
-        // ── Replay com matching em legalMoves() ─────────────────────
-        //
-        // Para cada SAN, parseia um Move temporário e localiza o lance legal
-        // equivalente no Board corrente. Isso resolve o problema do chesslib que
-        // representa roque como Move(E8,H8) internamente mas MoveList.loadFromSan()
-        // gera Move(E8,G8) — incompatibilidade que causava ok=false no doMove().
-        List<MoveEntry> entries = new ArrayList<>(sans.size());
+        // ── Replay ────────────────────────────────────────────────
+        List<MoveEntry> entries = new ArrayList<>(halfMoves.size());
         Board board = new Board();
         board.loadFromFen(setupFen);
 
-        // MoveList auxiliar usada apenas para converter SAN -> Move temporário
-        MoveList temp = new MoveList(setupFen);
+        int ply = 0;
+        for (Move move : halfMoves) {
+            String  fenBefore  = board.getFen();
+            boolean whiteTurn  = fenBefore.split("\\s+")[1].equals("w");
+            int     moveNumber = (ply / 2) + 1;
 
-        for (int ply = 0; ply < sans.size(); ply++) {
-            String sanToken = sans.get(ply);
-            String fenBefore = board.getFen();
-            boolean whiteTurn = fenBefore.split("\\s+")[1].equals("w");
-            int moveNumber = (ply / 2) + 1;
-
-            // Parseia SAN para obter from/to
-            Move candidate;
-            try {
-                temp.clear();
-                temp.loadFromSan(sanToken);
-                if (temp.isEmpty()) {
-                    log.warn("Partida {} ply {}: não foi possível parsear SAN '{}'. Interrompendo.",
-                            index, ply, sanToken);
-                    break;
-                }
-                candidate = temp.get(0);
-            } catch (Exception e) {
-                log.warn("Partida {} ply {}: erro ao parsear SAN '{}': {}. Interrompendo.",
-                        index, ply, sanToken, e.getMessage());
-                break;
-            }
-
-            // Localiza o Move legal correspondente no Board atual
-            Move legal = resolveMove(board, candidate);
-            if (legal == null) {
-                log.warn("Partida {} ply {}: lance '{}' não encontrado nos lances legais (FEN='{}'). Interrompendo.",
-                        index, ply, sanToken, fenBefore);
-                break;
-            }
-
-            String uci = toUci(legal);
-            String san = buildSan(board, legal, sanToken);
+            String uci = toUci(move);
+            String san = toSan(board, move);
 
             boolean ok;
             try {
-                ok = board.doMove(legal);
-            } catch (Exception ex) {
-                log.warn("Partida {} ply {}: excecao em doMove({}) FEN='{}': {}",
-                        index, ply, uci, fenBefore, ex.getMessage());
+                ok = board.doMove(move);
+            } catch (NullPointerException npe) {
+                // FIX: loga fenBefore (FEN real no momento do erro) em vez de setupFen
+                log.warn("Partida {} ply {}: NPE em doMove({}) — move inválido para FEN='{}'. "
+                        + "rawMoveText disponível: {}", index, ply, uci, fenBefore, rawMoveText != null);
                 break;
             }
 
             if (!ok) {
-                log.warn("Lance ilegal {} na partida {}, ply {} (FEN='{}')", uci, index, ply, fenBefore);
+                log.warn("Lance ilegal {} na partida {}, ply {}", uci, index, ply);
                 break;
             }
 
             entries.add(new MoveEntry(uci, san, fenBefore, board.getFen(), moveNumber, whiteTurn));
+            ply++;
         }
 
         return new GameData(index, tags, setupFen, entries);
     }
 
     /**
-     * Encontra o {@link Move} legal no Board cujo par (from, to) corresponde ao
-     * lance candidato. Para promoção, filtra também pela peça promovida.
+     * Retorna uma MoveList com os Move objects resolvidos contra a FEN correta.
+     * Para posição padrão retorna game.getHalfMoves() diretamente. Para FEN
+     * customizada, usa o rawMoveText extraído do PGN bruto (estratégia mais
+     * confiável) ou cai no toSanArray() como último recurso.
      *
-     * Isso é necessário porque o chesslib representa roque internamente com
-     * destino na torre (ex.: E1→H1), enquanto MoveList.loadFromSan() gera
-     * destino no rei (E1→G1). O matching por (from, to) via legalMoves()
-     * garante o objeto correto para board.doMove().
+     * FIX: Retorna null (em vez do halfMoves original incompatível) quando todas
+     * as tentativas de re-parse falham para FEN customizada, evitando NPE no replay.
      */
-    private Move resolveMove(Board board, Move candidate) {
-        Square fromSq = candidate.getFrom();
-        Square toSq   = candidate.getTo();
-        Piece  promo  = candidate.getPromotion();
+    private MoveList resolveHalfMoves(int index, Game game, String setupFen, String rawMoveText) {
+        MoveList halfMoves = game.getHalfMoves();
 
-        for (Move legal : board.legalMoves()) {
-            if (!legal.getFrom().equals(fromSq)) continue;
-
-            // Para roque: o candidato tem to=G1/G8 (casas do rei),
-            // mas o lance legal pode ter to=H1/H8 (casas da torre, estilo Chess960).
-            // Aceitamos ambos: verificação pelo tipo de peça + mesmo lado (arquivo).
-            Piece piece = board.getPiece(fromSq);
-            if (piece != null && piece != Piece.NONE
-                    && piece.getPieceType() == PieceType.KING) {
-                int candidateFileDiff = toSq.getFile().ordinal() - fromSq.getFile().ordinal();
-                int legalFileDiff     = legal.getTo().getFile().ordinal() - fromSq.getFile().ordinal();
-                // Roque rei: candidato vai para G (diff=+2) ou H (diff=+3)
-                // Roque dama: candidato vai para C (diff=-2) ou A (diff=-4)
-                boolean candidateKingSide = candidateFileDiff > 0;
-                boolean legalKingSide     = legalFileDiff > 0;
-                if (Math.abs(candidateFileDiff) >= 2 && Math.abs(legalFileDiff) >= 2) {
-                    if (candidateKingSide == legalKingSide) return legal;
-                    continue;
-                }
-            }
-
-            if (!legal.getTo().equals(toSq)) continue;
-
-            // Promoção: filtra pela peça desejada
-            if (promo != null && promo != Piece.NONE) {
-                if (!promo.equals(legal.getPromotion())) continue;
-            }
-
-            return legal;
-        }
-        return null;
-    }
-
-    /**
-     * Retorna lista de tokens SAN limpos para replay.
-     * Para posição padrão usa os SANs do game.getHalfMoves().
-     * Para FEN customizada usa rawMoveText (mais confiável) ou toSanArray().
-     */
-    private List<String> resolveSans(int index, Game game, String setupFen, String rawMoveText) {
-        // Posição padrão: extrai SANs do halfMoves já carregado
         if (START_FEN.equals(setupFen)) {
-            MoveList hm = game.getHalfMoves();
-            if (hm != null && !hm.isEmpty()) {
-                try {
-                    String[] arr = hm.toSanArray();
-                    if (arr != null && arr.length > 0) return List.of(arr);
-                } catch (Exception e) {
-                    log.warn("Partida {}: falha ao extrair SANs do halfMoves padrão: {}", index, e.getMessage());
-                }
-            }
+            return halfMoves; // posição padrão: sem problema
         }
 
-        // FEN customizada — Tentativa 1: rawMoveText (texto PGN bruto, mais confiável)
+        log.debug("Partida {}: FEN customizada detectada, re-parseando lances.", index);
+
+        // Tentativa 1: rawMoveText extraído diretamente do PGN bruto (mais confiável)
         if (rawMoveText != null && !rawMoveText.isBlank()) {
             try {
                 String cleaned = stripAnnotations(rawMoveText);
                 if (!cleaned.isBlank()) {
-                    List<String> tokens = List.of(cleaned.split("\\s+"));
-                    if (!tokens.isEmpty()) {
-                        log.debug("Partida {}: {} SANs extraídas via rawMoveText.", index, tokens.size());
-                        return tokens;
+                    MoveList reparsed = new MoveList(setupFen);
+                    reparsed.loadFromSan(cleaned);
+                    if (reparsed.size() > 0) {
+                        log.debug("Partida {}: re-parse OK via rawMoveText ({} lances).", index, reparsed.size());
+                        return reparsed;
                     }
+                    log.warn("Partida {}: re-parse via rawMoveText retornou lista vazia.", index);
                 }
             } catch (Exception e) {
-                log.warn("Partida {}: falha ao processar rawMoveText: {}", index, e.getMessage());
+                log.warn("Partida {}: falha no re-parse via rawMoveText: {}", index, e.getMessage());
             }
+        } else {
+            log.warn("Partida {}: rawMoveText é nulo/vazio após extração do PGN bruto.", index);
         }
 
-        // Tentativa 2: toSanArray() do halfMoves
+        // Tentativa 2: SANs extraídas dos halfMoves já carregados
+        // (as strings SAN são preservadas mesmo com Move objects corrompidos)
         try {
-            MoveList hm = game.getHalfMoves();
-            if (hm != null) {
-                String[] arr = hm.toSanArray();
-                if (arr != null && arr.length > 0) {
-                    List<String> tokens = new ArrayList<>();
-                    for (String s : arr) {
-                        if (s != null && !s.isBlank()) tokens.add(s.trim());
-                    }
-                    if (!tokens.isEmpty()) {
-                        log.debug("Partida {}: {} SANs via toSanArray().", index, tokens.size());
-                        return tokens;
-                    }
+            String[] sanArray = halfMoves.toSanArray();
+            if (sanArray != null && sanArray.length > 0) {
+                String sanText = String.join(" ", sanArray);
+                MoveList reparsed = new MoveList(setupFen);
+                reparsed.loadFromSan(sanText);
+                if (reparsed.size() > 0) {
+                    log.debug("Partida {}: re-parse OK via toSanArray() ({} lances).", index, reparsed.size());
+                    return reparsed;
                 }
+                log.warn("Partida {}: re-parse via toSanArray() retornou lista vazia.", index);
             }
         } catch (Exception e) {
-            log.warn("Partida {}: falha em toSanArray(): {}", index, e.getMessage());
+            log.warn("Partida {}: falha no re-parse via toSanArray(): {}", index, e.getMessage());
         }
 
-        log.error("Partida {}: todas tentativas de resolver SANs falharam.", index);
+        // FIX: retorna null para sinalizar falha — não retorna halfMoves incompatível
+        log.error(
+                "Partida {}: todas tentativas de re-parse falharam para FEN='{}'. "
+                        + "Retornando null para evitar NPE no replay.",
+                index, setupFen);
         return null;
     }
 
     /**
-     * Remove comentários, variantes, NAGs, numeração e resultado do texto PGN.
-     * Normaliza roque com zeros ('0-0' -> 'O-O').
+     * Remove comentários ({ }), variantes ( ( ) ), anotações NAG ($N), numeração
+     * de lances e token de resultado do texto PGN de lances. Necessário porque
+     * MoveList.loadFromSan() rejeita esses elementos.
+     *
+     * FIX: normaliza roque com zeros ('0-0', '0-0-0') para forma com letra O
+     * ('O-O', 'O-O-O'), aceita pelo MoveList.loadFromSan().
      */
     private String stripAnnotations(String moveText) {
         StringBuilder sb = new StringBuilder(moveText.length());
@@ -327,103 +271,39 @@ public class PgnService {
 
         for (int i = 0; i < moveText.length(); i++) {
             char c = moveText.charAt(i);
-            if (inSemicolon) { if (c == '\n') inSemicolon = false; continue; }
-            if (inBrace)     { if (c == '}')  inBrace = false;     continue; }
-            if (c == '{')    { inBrace = true;      continue; }
-            if (c == ';')    { inSemicolon = true;  continue; }
-            if (c == '(')    { depth++;              continue; }
-            if (c == ')')    { if (depth > 0) depth--; continue; }
-            if (depth == 0)  sb.append(c);
+
+            if (inSemicolon) {
+                if (c == '\n') inSemicolon = false;
+                continue;
+            }
+            if (inBrace) {
+                if (c == '}') inBrace = false;
+                continue;
+            }
+            if (c == '{') { inBrace = true; continue; }
+            if (c == ';') { inSemicolon = true; continue; }
+            if (c == '(') { depth++; continue; }
+            if (c == ')') { if (depth > 0) depth--; continue; }
+            if (depth == 0) sb.append(c);
         }
 
         return sb.toString()
-                .replaceAll("\\$\\d+", " ")             // NAG
-                .replaceAll("1-0|0-1|1/2-1/2|\\*", " ") // resultado
-                .replaceAll("\\d+\\.+", " ")             // numeração
-                .replaceAll("(?<![A-Za-z])0-0-0(?![A-Za-z0-9])", "O-O-O") // roque dama
-                .replaceAll("(?<![A-Za-z])0-0(?![A-Za-z0-9-])", "O-O")   // roque rei
+                .replaceAll("\\$\\d+", " ")            // NAG: $1, $2...
+                .replaceAll("1-0|0-1|1/2-1/2|\\*", " ") // token de resultado
+                .replaceAll("\\d+\\.+", " ")            // numeração: 1. 1...
+                // FIX: normaliza roque com zeros para forma com letra O
+                // Deve ocorrer ANTES de qualquer outro replace que possa interferir
+                .replaceAll("(?<![A-Za-z])0-0-0(?![A-Za-z0-9])", "O-O-O")
+                .replaceAll("(?<![A-Za-z])0-0(?![A-Za-z0-9-])", "O-O")
                 .replaceAll("\\s+", " ").trim();
-    }
-
-    /**
-     * Gera SAN para o lance legal a partir do Board atual.
-     * Para roque, retorna diretamente o token SAN original (já está correto).
-     * Para demais lances, usa buildSan().
-     */
-    private String buildSan(Board board, Move move, String originalSan) {
-        // Roque: usa o token SAN original (O-O / O-O-O) — já correto
-        Piece piece = board.getPiece(move.getFrom());
-        if (piece != null && piece != Piece.NONE && piece.getPieceType() == PieceType.KING) {
-            int fileDiff = move.getTo().getFile().ordinal() - move.getFrom().getFile().ordinal();
-            if (Math.abs(fileDiff) >= 2) {
-                // Adiciona xeque/xeque-mate ao token original se necessário
-                String base = fileDiff > 0 ? "O-O" : "O-O-O";
-                return addCheckSuffix(board, move, base);
-            }
-        }
-        return buildSanFull(board, move);
-    }
-
-    /**
-     * Gera SAN completa para um lance legal: peça, desambiguação, captura,
-     * destino, promoção, xeque/mate.
-     */
-    private String buildSanFull(Board board, Move move) {
-        Square from  = move.getFrom();
-        Square to    = move.getTo();
-        Piece  piece = board.getPiece(from);
-
-        if (piece == null || piece == Piece.NONE)
-            return from.value().toLowerCase(Locale.ROOT) + to.value().toLowerCase(Locale.ROOT);
-
-        PieceType type = piece.getPieceType();
-        StringBuilder sb = new StringBuilder();
-
-        if (type != PieceType.PAWN) sb.append(type.getSanSymbol());
-
-        if (type != PieceType.PAWN) {
-            boolean needFile = false, needRank = false;
-            for (Move other : board.legalMoves()) {
-                if (other.equals(move)) continue;
-                if (!other.getTo().equals(to)) continue;
-                Piece op = board.getPiece(other.getFrom());
-                if (op == null || op.getPieceType() != type) continue;
-                if (other.getFrom().getFile() == from.getFile()) needRank = true;
-                else needFile = true;
-            }
-            String fromStr = from.value().toLowerCase(Locale.ROOT);
-            if (needFile) sb.append(fromStr.charAt(0));
-            if (needRank) sb.append(fromStr.charAt(1));
-        } else {
-            boolean isCapture = board.getPiece(to) != Piece.NONE || board.getEnPassant() == to;
-            if (isCapture) sb.append(from.getFile().getNotation().toLowerCase(Locale.ROOT));
-        }
-
-        boolean isCapture = board.getPiece(to) != Piece.NONE || board.getEnPassant() == to;
-        if (isCapture) sb.append('x');
-        sb.append(to.value().toLowerCase(Locale.ROOT));
-
-        if (move.getPromotion() != null && move.getPromotion() != Piece.NONE)
-            sb.append('=').append(move.getPromotion().getPieceType().getSanSymbol().toUpperCase(Locale.ROOT));
-
-        return addCheckSuffix(board, move, sb.toString());
-    }
-
-    /** Executa o lance numa cópia do board para detectar xeque/xeque-mate. */
-    private String addCheckSuffix(Board board, Move move, String san) {
-        try {
-            Board copy = board.clone();
-            copy.doMove(move);
-            if (copy.isMated())         return san + "#";
-            if (copy.isKingAttacked())  return san + "+";
-        } catch (Exception e) {
-            log.debug("addCheckSuffix: erro ao clonar board — {}", e.getMessage());
-        }
-        return san;
     }
 
     // ── Exportação PGN ───────────────────────────────────────────
 
+    /**
+     * Serializa as partidas (com análise) para PGN anotado. Avaliações são
+     * emitidas como comentários no formato Lichess: {@code { [%eval +0.28] }}
+     */
     public String exportPgn(List<GameData> games) {
         StringBuilder sb = new StringBuilder();
         for (GameData g : games) {
@@ -434,6 +314,7 @@ public class PgnService {
     }
 
     private void appendGamePgn(StringBuilder sb, GameData game) {
+        // Cabeçalhos
         for (Map.Entry<String, String> e : game.getTags().entrySet()) {
             sb.append("[%s \"%s\"]\n".formatted(e.getKey(), e.getValue()));
         }
@@ -442,21 +323,31 @@ public class PgnService {
         List<MoveEntry> moves = game.getMoves();
         for (int i = 0; i < moves.size(); i++) {
             MoveEntry m = moves.get(i);
-            if (m.isWhiteTurn()) sb.append(m.getMoveNumber()).append(". ");
+
+            if (m.isWhiteTurn()) {
+                sb.append(m.getMoveNumber()).append(". ");
+            }
+
+            // Usa SAN se disponível, fallback para UCI
             sb.append(m.getSan() != null && !m.getSan().isBlank() ? m.getSan() : m.getUci());
+
+            // Comentário de avaliação (formato Lichess)
             if (m.isAnalyzed()) {
-                if (m.getMateIn() != null)
+                if (m.getMateIn() != null) {
                     sb.append(" { [%%eval #%d] }".formatted(m.getMateIn()));
-                else if (m.getEval() != null)
+                } else if (m.getEval() != null) {
                     sb.append(" { [%%eval %+.2f] }".formatted(m.getEval()));
+                }
             }
             sb.append(" ");
         }
+
         sb.append(game.getTags().getOrDefault("Result", "*"));
     }
 
     // ── Helpers ──────────────────────────────────────────────────
 
+    /** Converte Move para notação UCI ("e2e4", "e7e8q"). */
     private String toUci(Move move) {
         String from  = move.getFrom().value().toLowerCase(Locale.ROOT);
         String to    = move.getTo().value().toLowerCase(Locale.ROOT);
@@ -466,14 +357,38 @@ public class PgnService {
         return from + to + promo;
     }
 
+    /**
+     * Tenta obter a SAN do lance via chesslib. Retorna UCI como fallback.
+     */
+    private String toSan(Board board, Move move) {
+        try {
+            MoveList ml = new MoveList(board.getFen());
+            ml.add(move);
+            String[] arr = ml.toSanArray();
+            if (arr != null && arr.length > 0 && arr[0] != null)
+                return arr[0];
+        } catch (Exception e) {
+            log.debug("toSan: fallback para UCI — {}", e.getMessage());
+        }
+        return toUci(move);
+    }
+
+    /**
+     * Extrai o valor da HashMap retornada por PgnHolder.getEvent(), etc. O
+     * PgnHolder retorna um Map onde a chave é o nome do evento e o valor é um
+     * objeto Event/Site/Round com método getName().
+     */
     private String extractPgnHolderValue(Object mapOrValue) {
         if (mapOrValue == null) return null;
+
         if (mapOrValue instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<Object, Object> map = (Map<Object, Object>) mapOrValue;
             if (map.isEmpty()) return null;
+
             Object key = map.keySet().iterator().next();
             if (key != null) return key.toString();
+
             Object value = map.values().iterator().next();
             if (value != null) {
                 try {
@@ -484,6 +399,7 @@ public class PgnService {
                 }
             }
         }
+
         if (mapOrValue instanceof String) return (String) mapOrValue;
         return mapOrValue.toString();
     }
