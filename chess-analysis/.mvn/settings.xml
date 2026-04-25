@@ -1,0 +1,30 @@
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" 
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 
+          https://maven.apache.org/xsd/settings-1.0.0.xsd">
+<profiles>
+    <profile>
+        <id>java-25</id>
+        <properties>            
+			<maven.compiler.executable>C:\Program Files\Java\jdk-25.0.2\bin\javac</maven.compiler.executable>
+        </properties>
+    </profile>
+</profiles>
+
+<activeProfiles>
+    <activeProfile>java-25</activeProfile>
+</activeProfiles>    
+    <mirrors>
+        <!-- Mirror configurado APENAS para o ID 'central' -->
+        <!-- Isso garante que o JitPack (ID 'jitpack.io') seja acessado diretamente -->
+        <mirror>
+            <id>aliyun-central</id>
+            <name>Aliyun Maven Central</name>
+            <url>https://maven.aliyun.com/repository/central</url>
+            <mirrorOf>central</mirrorOf>
+            <blocked>false</blocked>
+        </mirror>
+    </mirrors>
+
+    <!-- Removidos perfis globais para evitar conflitos com o pom.xml -->
+</settings>
