@@ -147,7 +147,13 @@ public class PgnService {
         }
 
         // ── MoveList com FEN correta ──────────────────────────────
+        // FIX: resolveHalfMoves retorna null quando todas as tentativas falham,
+        // em vez de retornar os Move objects incompatíveis do game.getHalfMoves().
         MoveList halfMoves = resolveHalfMoves(index, game, setupFen, rawMoveText);
+        if (halfMoves == null) {
+            log.error("Partida {}: impossível resolver lances para FEN='{}'. Partida ignorada.", index, setupFen);
+            return new GameData(index, tags, setupFen, List.of());
+        }
 
         // ── Replay ────────────────────────────────────────────────
         List<MoveEntry> entries = new ArrayList<>(halfMoves.size());
@@ -167,8 +173,9 @@ public class PgnService {
             try {
                 ok = board.doMove(move);
             } catch (NullPointerException npe) {
+                // FIX: loga fenBefore (FEN real no momento do erro) em vez de setupFen
                 log.warn("Partida {} ply {}: NPE em doMove({}) — move inválido para FEN='{}'. "
-                        + "rawMoveText disponível: {}", index, ply, uci, setupFen, rawMoveText != null);
+                        + "rawMoveText disponível: {}", index, ply, uci, fenBefore, rawMoveText != null);
                 break;
             }
 
@@ -189,6 +196,9 @@ public class PgnService {
      * Para posição padrão retorna game.getHalfMoves() diretamente. Para FEN
      * customizada, usa o rawMoveText extraído do PGN bruto (estratégia mais
      * confiável) ou cai no toSanArray() como último recurso.
+     *
+     * FIX: Retorna null (em vez do halfMoves original incompatível) quando todas
+     * as tentativas de re-parse falham para FEN customizada, evitando NPE no replay.
      */
     private MoveList resolveHalfMoves(int index, Game game, String setupFen, String rawMoveText) {
         MoveList halfMoves = game.getHalfMoves();
@@ -206,8 +216,11 @@ public class PgnService {
                 if (!cleaned.isBlank()) {
                     MoveList reparsed = new MoveList(setupFen);
                     reparsed.loadFromSan(cleaned);
-                    log.debug("Partida {}: re-parse OK via rawMoveText ({} lances).", index, reparsed.size());
-                    return reparsed;
+                    if (reparsed.size() > 0) {
+                        log.debug("Partida {}: re-parse OK via rawMoveText ({} lances).", index, reparsed.size());
+                        return reparsed;
+                    }
+                    log.warn("Partida {}: re-parse via rawMoveText retornou lista vazia.", index);
                 }
             } catch (Exception e) {
                 log.warn("Partida {}: falha no re-parse via rawMoveText: {}", index, e.getMessage());
@@ -224,24 +237,31 @@ public class PgnService {
                 String sanText = String.join(" ", sanArray);
                 MoveList reparsed = new MoveList(setupFen);
                 reparsed.loadFromSan(sanText);
-                log.debug("Partida {}: re-parse OK via toSanArray() ({} lances).", index, reparsed.size());
-                return reparsed;
+                if (reparsed.size() > 0) {
+                    log.debug("Partida {}: re-parse OK via toSanArray() ({} lances).", index, reparsed.size());
+                    return reparsed;
+                }
+                log.warn("Partida {}: re-parse via toSanArray() retornou lista vazia.", index);
             }
         } catch (Exception e) {
             log.warn("Partida {}: falha no re-parse via toSanArray(): {}", index, e.getMessage());
         }
 
-        log.warn(
-                "Partida {}: todas tentativas de re-parse falharam. "
-                        + "halfMoves original será usado — NPE provável.",
-                index);
-        return halfMoves;
+        // FIX: retorna null para sinalizar falha — não retorna halfMoves incompatível
+        log.error(
+                "Partida {}: todas tentativas de re-parse falharam para FEN='{}'. "
+                        + "Retornando null para evitar NPE no replay.",
+                index, setupFen);
+        return null;
     }
 
     /**
      * Remove comentários ({ }), variantes ( ( ) ), anotações NAG ($N), numeração
      * de lances e token de resultado do texto PGN de lances. Necessário porque
      * MoveList.loadFromSan() rejeita esses elementos.
+     *
+     * FIX: normaliza roque com zeros ('0-0', '0-0-0') para forma com letra O
+     * ('O-O', 'O-O-O'), aceita pelo MoveList.loadFromSan().
      */
     private String stripAnnotations(String moveText) {
         StringBuilder sb = new StringBuilder(moveText.length());
@@ -268,9 +288,13 @@ public class PgnService {
         }
 
         return sb.toString()
-                .replaceAll("\\$\\d+", " ")           // NAG: $1, $2...
+                .replaceAll("\\$\\d+", " ")            // NAG: $1, $2...
                 .replaceAll("1-0|0-1|1/2-1/2|\\*", " ") // token de resultado
                 .replaceAll("\\d+\\.+", " ")            // numeração: 1. 1...
+                // FIX: normaliza roque com zeros para forma com letra O
+                // Deve ocorrer ANTES de qualquer outro replace que possa interferir
+                .replaceAll("(?<![A-Za-z])0-0-0(?![A-Za-z0-9])", "O-O-O")
+                .replaceAll("(?<![A-Za-z])0-0(?![A-Za-z0-9-])", "O-O")
                 .replaceAll("\\s+", " ").trim();
     }
 
