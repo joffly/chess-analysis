@@ -937,11 +937,44 @@ function showAnalysisForPly(mi) {
   const ev = m.mateIn != null
       ? (m.mateIn > 0 ? '+M' : '-M') + Math.abs(m.mateIn)
       : (m.eval >= 0 ? '+' : '') + (m.eval || 0).toFixed(2);
+
+  // O Stockfish analisa a posição ANTES do lance mi ser jogado: positions[mi].
+  // positions[mi+1] seria após o lance (cor invertida) — errado para o PV.
+  const posFen = positions[mi];
+
+  const bmSan = m.bestMove ? uciListToSanFigurines(posFen, [m.bestMove])[0] : '—';
   document.getElementById('bm-line').textContent =
-      `Eval: ${ev}  |  Melhor: ${m.bestMove ? toFigurine(m.bestMove) : '—'}`;
+      `Eval: ${ev}  |  Melhor: ${bmSan}`;
+  const pvSans = m.pv?.length ? uciListToSanFigurines(posFen, m.pv) : [];
   document.getElementById('pv-line').textContent =
-      m.pv?.length ? 'PV: ' + m.pv.map(toFigurine).join(' ') : '';
+      pvSans.length ? 'PV: ' + pvSans.join(' ') : '';
 }
+
+/**
+ * Converte uma sequência de lances UCI para SAN figurinado,
+ * encadeando as jogadas a partir do FEN dado.
+ * Ex: ['h2h4','c7c5','h4h5'] → ['h4','♗c5','h5']
+ *
+ * Usa chess.load() (retorna false se FEN inválido) em vez do construtor,
+ * que pode silenciosamente voltar à posição inicial em FENs não-padrão.
+ */
+function uciListToSanFigurines(fen, uciMoves) {
+  if (!fen || !uciMoves?.length) return uciMoves || [];
+  try {
+    const chess = new Chess();
+    if (!chess.load(fen)) return uciMoves; // FEN inválido — devolve UCI
+    return uciMoves.map(uci => {
+      const from      = uci.substring(0, 2);
+      const to        = uci.substring(2, 4);
+      const promotion = uci.length === 5 ? uci[4] : undefined;
+      const move      = chess.move({ from, to, promotion });
+      return move ? toFigurine(move.san) : uci; // fallback para UCI se ilegal
+    });
+  } catch (e) {
+    return uciMoves; // fallback seguro
+  }
+}
+
 
 // ════════════════════════════════════════════════════════════
 //  Eval Bar
