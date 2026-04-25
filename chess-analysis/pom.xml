@@ -18,7 +18,12 @@
   <name>Chess Analyzer</name>
   <description>PGN Chess Analyzer with Stockfish — Spring Boot 4 / Java 25</description>
 
-
+  <!-- Bloco único de properties — duplicatas causam FATAL no Maven -->
+  <properties>
+    <java.version>25</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+  </properties>
 
   <repositories>
     <!-- Repositório JitPack declarado explicitamente -->
@@ -29,10 +34,6 @@
       <snapshots><enabled>true</enabled></snapshots>
     </repository>
   </repositories>
-
-  <properties>
-    <java.version>25</java.version>
-  </properties>
 
   <dependencies>
     <dependency>
@@ -64,16 +65,22 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
       </plugin>
- 		
- 	  <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-compiler-plugin</artifactId>            
-            <configuration>
-                <release>25</release> 
-                <fork>true</fork> 
-            </configuration>
-        </plugin>      
-      
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>25</release>
+          <fork>true</fork>
+        </configuration>
+      </plugin>
     </plugins>
+  <resources>
+    <resource>
+      <directory>src/main/resources</directory>
+      <filtering>false</filtering>  <!-- evita que o Maven tente ler/parsear o arquivo -->
+    </resource>
+  </resources>    
   </build>
+
 </project>

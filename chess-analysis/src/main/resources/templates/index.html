@@ -938,9 +938,9 @@ function showAnalysisForPly(mi) {
       ? (m.mateIn > 0 ? '+M' : '-M') + Math.abs(m.mateIn)
       : (m.eval >= 0 ? '+' : '') + (m.eval || 0).toFixed(2);
   document.getElementById('bm-line').textContent =
-      `Eval: ${ev}  |  Melhor: ${m.bestMove || '—'}`;
+      `Eval: ${ev}  |  Melhor: ${m.bestMove ? toFigurine(m.bestMove) : '—'}`;
   document.getElementById('pv-line').textContent =
-      m.pv?.length ? 'PV: ' + m.pv.join(' ') : '';
+      m.pv?.length ? 'PV: ' + m.pv.map(toFigurine).join(' ') : '';
 }
 
 // ════════════════════════════════════════════════════════════
