@@ -66,8 +66,8 @@ public class GameController {
 	private final BoardService boardService;
 	private final AppProperties appProperties;
 
-	public GameController(StockfishPoolService stockfishPool, PgnService pgnService, GameAnalysisService analysisService,
-			BoardService boardService, AppProperties appProperties) {
+	public GameController(StockfishPoolService stockfishPool, PgnService pgnService,
+			GameAnalysisService analysisService, BoardService boardService, AppProperties appProperties) {
 		this.stockfishPool = stockfishPool;
 		this.pgnService = pgnService;
 		this.analysisService = analysisService;
@@ -87,8 +87,7 @@ public class GameController {
 	@PostMapping("/api/stockfish/configure")
 	@ResponseBody
 	public ResponseEntity<?> configureStockfish(@RequestParam(required = false) String path,
-			@RequestParam(defaultValue = "15") int depth,
-			@RequestParam(required = false) Integer poolSize) {
+			@RequestParam(defaultValue = "15") int depth, @RequestParam(required = false) Integer poolSize) {
 		try {
 			String stockfishPath = (path != null && !path.isBlank()) ? path : appProperties.stockfishPath();
 			int effectivePoolSize = (poolSize != null && poolSize > 0) ? poolSize : appProperties.stockfishPoolSize();
@@ -98,8 +97,9 @@ public class GameController {
 			}
 			stockfishPool.start(stockfishPath, effectivePoolSize);
 			analysisService.setAnalysisDepth(depth);
-			return ResponseEntity.ok(Map.of("ok", true, "message",
-					"Pool Stockfish iniciado com %d instância(s) e profundidade %d".formatted(effectivePoolSize, depth)));
+			return ResponseEntity
+					.ok(Map.of("ok", true, "message", "Pool Stockfish iniciado com %d instância(s) e profundidade %d"
+							.formatted(effectivePoolSize, depth)));
 		} catch (Exception e) {
 			log.error("Erro ao configurar Stockfish: {}", e.getMessage());
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", e.getMessage()));
@@ -134,8 +134,9 @@ public class GameController {
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", "Arquivo vazio."));
 		try {
 			var games = pgnService.load(file);
-			if (games.isEmpty())
+			if (games.isEmpty()) {
 				return ResponseEntity.badRequest().body(Map.of("ok", false, "message", "Nenhuma partida encontrada."));
+			}
 			analysisService.setGames(games);
 			return ResponseEntity.ok(Map.of("ok", true, "count", games.size(), "games",
 					games.stream().map(GameData::toSummary).collect(Collectors.toList())));

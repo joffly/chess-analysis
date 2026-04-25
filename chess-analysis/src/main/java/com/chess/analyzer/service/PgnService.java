@@ -64,6 +64,9 @@ public class PgnService {
 		List<GameData> result = new ArrayList<>(games.size());
 		for (int i = 0; i < games.size(); i++) {
 			try {
+				if (i == 1024) {
+					System.out.println("Partida: " + games.get(i).getProperty().get("Event"));
+				}
 				result.add(convertGame(i, games.get(i), pgn));
 			} catch (Exception ex) {
 				log.error("Falha ao parsear partida {}: {}", i, ex.getMessage(), ex);
@@ -74,17 +77,14 @@ public class PgnService {
 	}
 
 	private GameData convertGame(int index, Game game, PgnHolder pgn) throws Exception {
+
+		// CRÍTICO: capturar ANTES de loadMoveText() — depois pode ser nulo/consumido
+		String rawMoveText = (game.getMoveText() != null) ? game.getMoveText().toString().trim() : null;
+
 		game.loadMoveText();
 
-		// ── Tags ────────────────────────────────────────────────
-		//
-		// Em chesslib, os campos do Seven-Tag Roster (Event, Site, Round, etc.)
-		// são armazenados no PgnHolder, não no Game individual. game.getProperty()
-		// retorna null quando carregado de String.
-		//
+		// ── Tags ──────────────────────────────────────────────────
 		Map<String, String> tags = new LinkedHashMap<>();
-
-		// Seven-Tag Roster — Event via PgnHolder, Site/Round via game.getProperty()
 		String evtName = extractPgnHolderValue(pgn.getEvent());
 		String siteName = getPropertyValue(game, "Site");
 		String round = getPropertyValue(game, "Round");
@@ -100,17 +100,12 @@ public class PgnService {
 		addTag(tags, "Black", black);
 		addTag(tags, "Result", result);
 
-		// ELOs — chesslib armazena como int no Player; 0 = não informado
 		Player wp = game.getWhitePlayer();
 		Player bp = game.getBlackPlayer();
 		if (wp != null && wp.getElo() > 0)
 			tags.put("WhiteElo", String.valueOf(wp.getElo()));
 		if (bp != null && bp.getElo() > 0)
 			tags.put("BlackElo", String.valueOf(bp.getElo()));
-
-		// Tags extras do cabeçalho (WhiteRatingDiff, BlackRatingDiff, Opening,
-		// TimeControl, Termination, ECO, Variant, Annotator, GameId, etc.)
-		// putIfAbsent garante que os Seven-Tag Roster acima não sejam sobrescritos.
 		if (game.getProperty() != null) {
 			game.getProperty().forEach((k, v) -> {
 				if (v != null && !v.isBlank())
@@ -118,15 +113,17 @@ public class PgnService {
 			});
 		}
 
-		// ── FEN inicial ─────────────────────────────────────────
-		String setupFen = tags.getOrDefault("FEN", START_FEN);
-		if ("?".equals(setupFen) || setupFen.isBlank())
+		// ── FEN inicial ───────────────────────────────────────────
+		String setupFen = tags.get("FEN");
+		if (setupFen == null || setupFen.isBlank() || "?".equals(setupFen)) {
 			setupFen = START_FEN;
+		}
 
-		// ── Replay para gerar FENs e SANs ───────────────────────
-		MoveList halfMoves = game.getHalfMoves();
+		// ── MoveList com FEN correta ──────────────────────────────
+		MoveList halfMoves = resolveHalfMoves(index, game, setupFen, rawMoveText);
+
+		// ── Replay ────────────────────────────────────────────────
 		List<MoveEntry> entries = new ArrayList<>(halfMoves.size());
-
 		Board board = new Board();
 		board.loadFromFen(setupFen);
 
@@ -139,20 +136,132 @@ public class PgnService {
 			String uci = toUci(move);
 			String san = toSan(board, move);
 
-			boolean ok = board.doMove(move);
+			boolean ok;
+			try {
+				ok = board.doMove(move);
+			} catch (NullPointerException npe) {
+				// Casa de origem vazia: NPE dentro do chesslib — não pode ser tratado com !ok
+				log.warn("Partida {} ply {}: NPE em doMove({}) — move inválido para FEN='{}'. "
+						+ "rawMoveText disponível: {}", index, ply, uci, setupFen, rawMoveText != null);
+				break;
+			}
 			if (!ok) {
 				log.warn("Lance ilegal {} na partida {}, ply {}", uci, index, ply);
 				break;
 			}
-			String fenAfter = board.getFen();
 
-			entries.add(new MoveEntry(uci, san, fenBefore, fenAfter, moveNumber, whiteTurn));
+			entries.add(new MoveEntry(uci, san, fenBefore, board.getFen(), moveNumber, whiteTurn));
 			ply++;
 		}
 
 		return new GameData(index, tags, setupFen, entries);
 	}
 
+	/**
+	 * Retorna uma MoveList com os Move objects resolvidos contra a FEN correta.
+	 * Para posição padrão retorna game.getHalfMoves() diretamente. Para FEN
+	 * customizada, tenta re-parsear o texto raw para evitar o NPE causado por Move
+	 * objects resolvidos contra a posição errada.
+	 */
+	private MoveList resolveHalfMoves(int index, Game game, String setupFen, String rawMoveText) {
+		MoveList halfMoves = game.getHalfMoves();
+
+		if (START_FEN.equals(setupFen)) {
+			return halfMoves; // posição padrão: sem problema
+		}
+
+		log.debug("Partida {}: FEN customizada detectada, re-parseando lances.", index);
+
+		// Tentativa 1: rawMoveText capturado ANTES de loadMoveText()
+		if (rawMoveText != null && !rawMoveText.isBlank()) {
+			try {
+				String cleaned = stripAnnotations(rawMoveText);
+				if (!cleaned.isBlank()) {
+					MoveList reparsed = new MoveList(setupFen);
+					reparsed.loadFromSan(cleaned);
+					log.debug("Partida {}: re-parse OK via rawMoveText ({} lances).", index, reparsed.size());
+					return reparsed;
+				}
+			} catch (Exception e) {
+				log.warn("Partida {}: falha no re-parse via rawMoveText: {}", index, e.getMessage());
+			}
+		} else {
+			log.warn("Partida {}: rawMoveText é nulo/vazio — getMoveText() não disponível antes de loadMoveText().",
+					index);
+		}
+
+		// Tentativa 2: SANs extraídas dos halfMoves já carregados
+		// (as strings SAN são preservadas mesmo com Move objects corrompidos)
+		try {
+			String[] sanArray = halfMoves.toSanArray();
+			if (sanArray != null && sanArray.length > 0) {
+				String sanText = String.join(" ", sanArray);
+				MoveList reparsed = new MoveList(setupFen);
+				reparsed.loadFromSan(sanText);
+				log.debug("Partida {}: re-parse OK via toSanArray() ({} lances).", index, reparsed.size());
+				return reparsed;
+			}
+		} catch (Exception e) {
+			log.warn("Partida {}: falha no re-parse via toSanArray(): {}", index, e.getMessage());
+		}
+
+		log.warn(
+				"Partida {}: todas tentativas de re-parse falharam. " + "halfMoves original será usado — NPE provável.",
+				index);
+		return halfMoves;
+	}
+
+	/**
+	 * Remove comentários ({ }), variantes ( ( ) ), anotações NAG ($N), numeração de
+	 * lances e token de resultado do texto PGN de lances. Necessário porque
+	 * MoveList.loadFromSan() rejeita esses elementos.
+	 */
+	private String stripAnnotations(String moveText) {
+		StringBuilder sb = new StringBuilder(moveText.length());
+		int depth = 0;
+		boolean inBrace = false;
+		boolean inSemicolon = false;
+
+		for (int i = 0; i < moveText.length(); i++) {
+			char c = moveText.charAt(i);
+
+			if (inSemicolon) {
+				if (c == '\n')
+					inSemicolon = false;
+				continue;
+			}
+			if (inBrace) {
+				if (c == '}')
+					inBrace = false;
+				continue;
+			}
+			if (c == '{') {
+				inBrace = true;
+				continue;
+			}
+			if (c == ';') {
+				inSemicolon = true;
+				continue;
+			}
+			if (c == '(') {
+				depth++;
+				continue;
+			}
+			if (c == ')') {
+				if (depth > 0)
+					depth--;
+				continue;
+			}
+
+			if (depth == 0)
+				sb.append(c);
+		}
+
+		return sb.toString().replaceAll("\\$\\d+", " ") // NAG: $1, $2...
+				.replaceAll("1-0|0-1|1/2-1/2|\\*", " ") // token de resultado
+				.replaceAll("\\d+\\.+", " ") // numeração: 1. 1...
+				.replaceAll("\\s+", " ").trim();
+	}
 	// ── Exportação PGN ───────────────────────────────────────────
 
 	/**
@@ -229,15 +338,15 @@ public class PgnService {
 	}
 
 	/**
-	 * Extrai o valor da HashMap retornada por PgnHolder.getEvent(), etc.
-	 * O PgnHolder retorna um Map<String, Object> onde a chave é o nome do evento
-	 * e o valor é um objeto Event/Site/Round com método getName().
+	 * Extrai o valor da HashMap retornada por PgnHolder.getEvent(), etc. O
+	 * PgnHolder retorna um Map<String, Object> onde a chave é o nome do evento e o
+	 * valor é um objeto Event/Site/Round com método getName().
 	 */
 	private String extractPgnHolderValue(Object mapOrValue) {
 		if (mapOrValue == null) {
 			return null;
 		}
-		
+
 		// Se for uma Map (como retorna pgn.getEvent()), extrair o primeiro valor
 		if (mapOrValue instanceof Map) {
 			@SuppressWarnings("unchecked")
@@ -245,13 +354,13 @@ public class PgnService {
 			if (map.isEmpty()) {
 				return null;
 			}
-			
+
 			// A chave em si é o valor (ex: Event name é a chave)
 			Object key = map.keySet().iterator().next();
 			if (key != null) {
 				return key.toString();
 			}
-			
+
 			// Fallback: tenta o valor do map
 			Object value = map.values().iterator().next();
 			if (value != null) {
@@ -264,12 +373,12 @@ public class PgnService {
 				}
 			}
 		}
-		
+
 		// Se for uma String simples, retornar como está
 		if (mapOrValue instanceof String) {
 			return (String) mapOrValue;
 		}
-		
+
 		// Fallback: toString()
 		return mapOrValue.toString();
 	}
