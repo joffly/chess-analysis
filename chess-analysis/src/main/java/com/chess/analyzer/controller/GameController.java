@@ -31,7 +31,7 @@ import com.chess.analyzer.model.MoveResponse;
 import com.chess.analyzer.service.BoardService;
 import com.chess.analyzer.service.GameAnalysisService;
 import com.chess.analyzer.service.PgnService;
-import com.chess.analyzer.service.StockfishService;
+import com.chess.analyzer.service.StockfishPoolService;
 
 /**
  * Controlador principal — expõe a SPA e todos os endpoints REST/SSE.
@@ -60,15 +60,15 @@ public class GameController {
 
 	private static final Logger log = LoggerFactory.getLogger(GameController.class);
 
-	private final StockfishService stockfish;
+	private final StockfishPoolService stockfishPool;
 	private final PgnService pgnService;
 	private final GameAnalysisService analysisService;
 	private final BoardService boardService;
 	private final AppProperties appProperties;
 
-	public GameController(StockfishService stockfish, PgnService pgnService, GameAnalysisService analysisService,
+	public GameController(StockfishPoolService stockfishPool, PgnService pgnService, GameAnalysisService analysisService,
 			BoardService boardService, AppProperties appProperties) {
-		this.stockfish = stockfish;
+		this.stockfishPool = stockfishPool;
 		this.pgnService = pgnService;
 		this.analysisService = analysisService;
 		this.boardService = boardService;
@@ -86,16 +86,20 @@ public class GameController {
 
 	@PostMapping("/api/stockfish/configure")
 	@ResponseBody
-	public ResponseEntity<?> configureStockfish(@RequestParam String path,
-			@RequestParam(defaultValue = "15") int depth) {
+	public ResponseEntity<?> configureStockfish(@RequestParam(required = false) String path,
+			@RequestParam(defaultValue = "15") int depth,
+			@RequestParam(required = false) Integer poolSize) {
 		try {
-			if (path == null) {
-				stockfish.start(appProperties.stockfishPath());
-			} else {
-				stockfish.start(path);
+			String stockfishPath = (path != null && !path.isBlank()) ? path : appProperties.stockfishPath();
+			int effectivePoolSize = (poolSize != null && poolSize > 0) ? poolSize : appProperties.stockfishPoolSize();
+
+			if (stockfishPool.isStarted()) {
+				stockfishPool.close();
 			}
+			stockfishPool.start(stockfishPath, effectivePoolSize);
 			analysisService.setAnalysisDepth(depth);
-			return ResponseEntity.ok(Map.of("ok", true, "message", "Stockfish conectado com profundidade " + depth));
+			return ResponseEntity.ok(Map.of("ok", true, "message",
+					"Pool Stockfish iniciado com %d instância(s) e profundidade %d".formatted(effectivePoolSize, depth)));
 		} catch (Exception e) {
 			log.error("Erro ao configurar Stockfish: {}", e.getMessage());
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", e.getMessage()));
@@ -111,8 +115,14 @@ public class GameController {
 	@GetMapping("/api/stockfish/status")
 	@ResponseBody
 	public Map<String, Object> stockfishStatus() {
-		return Map.of("ready", stockfish.isReady(), "depth", analysisService.getAnalysisDepth(), "analyzing",
-				analysisService.isAnalyzing());
+		Map<String, Object> status = new LinkedHashMap<>();
+		status.put("ready", stockfishPool.isStarted());
+		status.put("depth", analysisService.getAnalysisDepth());
+		status.put("analyzing", analysisService.isAnalyzing());
+		if (stockfishPool.isStarted()) {
+			status.putAll(stockfishPool.getStatus());
+		}
+		return status;
 	}
 
 	// ── PGN ──────────────────────────────────────────────────────
@@ -197,7 +207,7 @@ public class GameController {
 	@PostMapping("/api/analysis/start")
 	@ResponseBody
 	public ResponseEntity<?> startAnalysis() {
-		if (!stockfish.isReady())
+		if (!stockfishPool.isStarted())
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", "Stockfish não configurado."));
 		if (analysisService.getGames().isEmpty())
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", "Nenhuma partida carregada."));

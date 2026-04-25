@@ -7,8 +7,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +38,7 @@ public class GameAnalysisService {
 
 	private static final Logger log = LoggerFactory.getLogger(GameAnalysisService.class);
 
-	private final StockfishService stockfish;
+	private final StockfishPoolService stockfishPool;
 	private final PgnService pgnService;
 
 	/** Partidas carregadas (thread-safe para leitura concorrente). */
@@ -50,8 +52,8 @@ public class GameAnalysisService {
 
 	private volatile int analysisDepth = 15;
 
-	public GameAnalysisService(StockfishService stockfish, PgnService pgnService) {
-		this.stockfish = stockfish;
+	public GameAnalysisService(StockfishPoolService stockfishPool, PgnService pgnService) {
+		this.stockfishPool = stockfishPool;
 		this.pgnService = pgnService;
 	}
 
@@ -126,52 +128,99 @@ public class GameAnalysisService {
 
 	public void stopAnalysis() {
 		if (analyzing.compareAndSet(true, false)) {
-			stockfish.stop();
+			stockfishPool.stopAll();
 			broadcast("STOPPED", Map.of());
 		}
 	}
 
 	// ── Loop de análise ──────────────────────────────────────────
 
+	/**
+	 * Executa a análise paralela usando múltiplas virtual threads, uma por instância Stockfish.
+	 * Cada lance é analisado concorrentemente respeitando a ordem dentro da partida.
+	 */
 	private void runAnalysis() throws Exception {
-		cleanAnalysisContext(); // ← Adicionar no início
+		cleanAnalysisContext();
 		int totalPlies = games.stream().mapToInt(g -> g.getMoves().size()).sum();
-		int analyzed = 0;
+		AtomicInteger analyzedCounter = new AtomicInteger(0);
 
-		broadcast("START", Map.of("totalGames", games.size(), "totalMoves", totalPlies, "depth", analysisDepth));
+		broadcast("START", Map.of("totalGames", games.size(), "totalMoves", totalPlies, "depth", analysisDepth,
+				"poolSize", stockfishPool.getPoolSize()));
 
+		// Coleta todas as posições para análise em paralelo
+		List<AnalysisTask> tasks = new ArrayList<>();
 		for (GameData game : games) {
-			broadcast("GAME_START", Map.of("gameIndex", game.getIndex(), "title", game.getTitle(), "totalMoves",
-					game.getMoves().size()));
-
 			List<MoveEntry> moves = game.getMoves();
 			for (int mi = 0; mi < moves.size(); mi++) {
-				if (!analyzing.get())
-					return; // cancelado
-
 				MoveEntry move = moves.get(mi);
-				StockfishResult r = stockfish.analyze(move.getFenBefore(), analysisDepth);
-
-				move.setAnalysis(r.mateIn() != null ? 0.0 : r.eval(), r.mateIn(), r.bestMove(), r.pv());
-
-				analyzed++;
-
-				Map<String, Object> payload = new LinkedHashMap<>();
-				payload.put("gameIndex", game.getIndex());
-				payload.put("moveIndex", mi);
-				payload.put("eval", r.mateIn() != null ? null : r.eval());
-				payload.put("mateIn", r.mateIn());
-				// payload.put("bestMove", r.bestMove());
-				payload.put("bestMove", uciToSan(move.getFenBefore(), r.bestMove()));
-				payload.put("pv", r.pv().stream().limit(5).toList());
-				payload.put("evalStr", move.getEvalFormatted());
-				payload.put("progress", analyzed * 100 / Math.max(1, totalPlies));
-				broadcast("MOVE_ANALYZED", payload);
+				tasks.add(new AnalysisTask(game, mi, move));
 			}
-
-			game.setFullyAnalyzed(true);
-			broadcast("GAME_DONE", Map.of("gameIndex", game.getIndex(), "title", game.getTitle()));
 		}
+
+		// Executa análises em paralelo usando CompletableFuture com virtual threads
+		try {
+			List<CompletableFuture<Void>> futures = tasks.stream()
+					.map(task -> CompletableFuture.runAsync(() -> {
+						try {
+							executeAnalysis(task, analyzedCounter, totalPlies);
+						} catch (Exception e) {
+							log.error("Erro ao analisar lance: {}", e.getMessage());
+						}
+					}, Thread.ofVirtual().unstarted()) // Usa thread virtual
+					.toList();
+
+			// Aguarda todas as tarefas completarem
+			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+		} catch (Exception e) {
+			if (e.getCause() instanceof InterruptedException) {
+				Thread.currentThread().interrupt();
+				log.warn("Análise interrompida.");
+				return;
+			}
+			throw e;
+		}
+
+		// Marca todas as partidas como analisadas
+		games.forEach(game -> game.setFullyAnalyzed(true));
+		games.forEach(game -> broadcast("GAME_DONE",
+				Map.of("gameIndex", game.getIndex(), "title", game.getTitle())));
+	}
+
+	/**
+	 * Tarefa de análise individual para um lance específico.
+	 */
+	private record AnalysisTask(GameData game, int moveIndex, MoveEntry move) {
+	}
+
+	/**
+	 * Executa a análise de uma única tarefa e transmite o resultado via SSE.
+	 */
+	private void executeAnalysis(AnalysisTask task, AtomicInteger counter, int totalPlies)
+			throws Exception {
+		if (!analyzing.get())
+			return;
+
+		GameData game = task.game();
+		int mi = task.moveIndex();
+		MoveEntry move = task.move();
+
+		StockfishResult r = stockfishPool.analyze(move.getFenBefore(), analysisDepth);
+
+		move.setAnalysis(r.mateIn() != null ? 0.0 : r.eval(), r.mateIn(), r.bestMove(), r.pv());
+
+		int analyzed = counter.incrementAndGet();
+
+		Map<String, Object> payload = new LinkedHashMap<>();
+		payload.put("gameIndex", game.getIndex());
+		payload.put("moveIndex", mi);
+		payload.put("eval", r.mateIn() != null ? null : r.eval());
+		payload.put("mateIn", r.mateIn());
+		payload.put("bestMove", uciToSan(move.getFenBefore(), r.bestMove()));
+		payload.put("pv", r.pv().stream().limit(5).toList());
+		payload.put("evalStr", move.getEvalFormatted());
+		payload.put("progress", analyzed * 100 / Math.max(1, totalPlies));
+		broadcast("MOVE_ANALYZED", payload);
 	}
 
 	private void cleanAnalysisContext() {

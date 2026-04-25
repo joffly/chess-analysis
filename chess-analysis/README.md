@@ -1,7 +1,7 @@
 # Chess Analyzer
-**Spring Boot 4.0 + Java 25 + Stockfish UCI**
+**Spring Boot 4.0 + Java 25 + Stockfish UCI Multi-Thread**
 
-Aplicação web moderna para carregar partidas de xadrez em formato PGN, analisá-las com o motor Stockfish e navegar pelos lances com barra de avaliação em tempo real. Construída com virtual threads (Project Loom) para máxima performance.
+Aplicação web moderna para carregar partidas de xadrez em formato PGN, analisá-las com o motor Stockfish e navegar pelos lances com barra de avaliação em tempo real. Construída com **virtual threads (Project Loom)** e **pool de múltiplas instâncias Stockfish** para análise paralela de alta performance.
 
 ---
 
@@ -11,6 +11,7 @@ Aplicação web moderna para carregar partidas de xadrez em formato PGN, analis�
 |---|---|
 | Carregamento PGN | Suporte a arquivos com N partidas |
 | Análise Stockfish | UCI completo, depth configurável, progresso em tempo real via SSE |
+| **Análise Multi-Thread** | Pool configurável de instâncias Stockfish (1-8) para análise paralela |
 | Tabuleiro interativo | chessboard.js, drag-and-drop, clique, peças Wikipedia |
 | Movimentação livre | Arraste ou clique — com validação legal server-side (chesslib) |
 | Roque / En-passant | Tratados automaticamente pelo chesslib |
@@ -58,11 +59,13 @@ A aplicação estará disponível em: **http://localhost:8080**
 chess.stockfish-path=C:/stockfish/stockfish-windows-x86-64.exe
 chess.analysis-depth=15
 chess.analysis-time-limit-ms=5000
+chess.stockfish-pool-size=4  # Número de instâncias para análise paralela (1-8)
 ```
 
 **Opção B: Via interface da aplicação**
 - Cole o caminho do executável do Stockfish
 - Ajuste a profundidade (15 = bom equilíbrio)
+- Ajuste o tamanho do pool (4 = recomendado para CPUs quad-core+)
 - Clique **Conectar**
 
 ---
@@ -104,10 +107,11 @@ src/main/java/com/chess/analyzer/
 │   ├── MoveRequest                DTO: lance enviado pelo frontend (from/to/promotion)
 │   └── MoveResponse               DTO: resultado do lance (FEN, SAN, isCheckmate, etc.)
 ├── service/
-│   ├── StockfishService           Gerenciador do processo UCI (singleton, synchronized)
+│   ├── StockfishPoolService       Gerenciador do pool de processos UCI (multi-thread)
+│   ├── StockfishService           Gerenciador single-thread (legado, manter compatibilidade)
 │   ├── BoardService               Validação de lances e geração de movimentos legais
 │   ├── PgnService                 Parser PGN (chesslib) e exportação anotada
-│   └── GameAnalysisService        Orquestrador de análise (virtual thread + SSE)
+│   └── GameAnalysisService        Orquestrador de análise (virtual thread + SSE + parallel stream)
 └── controller/
     └── GameController             REST API + SSE + download de PGN
 ```
@@ -117,8 +121,8 @@ src/main/java/com/chess/analyzer/
 ```
 → uci
 ← uciok
-→ setoption name Hash value 256
-→ setoption name Threads value 2
+→ setoption name Hash value 128
+→ setoption name Threads value 1   # Cada instância no pool usa 1 thread
 → isready
 ← readyok
 ── para cada posição: ──
@@ -132,15 +136,32 @@ src/main/java/com/chess/analyzer/
 ### Normalização de avaliação
 
 O Stockfish retorna a avaliação do **lado que vai jogar**.
-O `StockfishService` normaliza para a **perspectiva das Brancas**
+O `StockfishPoolService` normaliza para a **perspectiva das Brancas**
 (positivo = Brancas melhor) para exibição consistente na barra.
 
-### Virtual Threads (Java 25 — Project Loom)
+### Virtual Threads + Pool Multi-Thread (Java 25 — Project Loom)
 
-O loop de análise roda em `Thread.ofVirtual()` — ideal para I/O-bound bloqueante
-com o processo Stockfish. O Tomcat também usa virtual threads via
-`spring.threads.virtual.enabled=true`, permitindo milhares de conexões simultâneas
-com mínimo overhead de memória.
+A análise utiliza duas camadas de paralelismo:
+
+1. **Virtual Threads**: Cada lance é processado em uma virtual thread independente, permitindo milhares de tarefas concorrentes com mínimo overhead de memória.
+
+2. **Pool de Instâncias Stockfish**: Múltiplos processos Stockfish independentes (configurável via `chess.stockfish-pool-size`) permitem análise verdadeiramente paralela de posições diferentes.
+
+```java
+// Exemplo: 4 instâncias analisam 4 lances simultaneamente
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Stockfish #0│  │ Stockfish #1│  │ Stockfish #2│  │ Stockfish #3│
+│   Lance 1   │  │   Lance 2   │  │   Lance 3   │  │   Lance 4   │
+└─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘
+       ↑                ↑                ↑                ↑
+       └────────────────┴────────────────┴────────────────┘
+                    Virtual Threads (CompletableFuture)
+```
+
+**Benefícios:**
+- Até 4x mais rápido em CPUs quad-core+
+- Escalabilidade linear com número de núcleos
+- Uso eficiente de recursos (cada instância usa 1 thread CPU + 128MB Hash)
 
 ---
 

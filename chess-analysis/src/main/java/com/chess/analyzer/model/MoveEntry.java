@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * Representa um meio-lance (ply) de uma partida de xadrez.
  * Os campos de análise (eval, bestMove, pv) são preenchidos
- * assincronamente pelo StockfishService.
+ * assincronamente pelo StockfishPoolService.
  */
 public class MoveEntry {
 
