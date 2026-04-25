@@ -166,7 +166,7 @@ public class GameAnalysisService {
 						} catch (Exception e) {
 							log.error("Erro ao analisar lance: {}", e.getMessage());
 						}
-					}, Thread.ofVirtual().unstarted()) // Usa thread virtual
+					}, Thread.ofVirtual().unstarted())) // Usa thread virtual
 					.toList();
 
 			// Aguarda todas as tarefas completarem
