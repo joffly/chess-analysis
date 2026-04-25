@@ -223,7 +223,7 @@ public class GameAnalysisService {
 		payload.put("eval", r.mateIn() != null ? null : r.eval());
 		payload.put("mateIn", r.mateIn());
 		payload.put("bestMove", uciToSan(move.getFenBefore(), r.bestMove()));
-		payload.put("pv", r.pv().stream().limit(5).toList());
+		payload.put("pv", r.pv().stream().limit(5).map(pvUci -> uciToSan(getFenForPv(move.getFenBefore(), r.pv(), pvUci), pvUci)).toList());
 		payload.put("evalStr", move.getEvalFormatted());
 		payload.put("progress", analyzed * 100 / Math.max(1, totalPlies));
 		broadcast("MOVE_ANALYZED", payload);
@@ -320,6 +320,41 @@ public class GameAnalysisService {
 			san.append(board.legalMoves().isEmpty() ? '#' : '+');
 
 		return san.toString();
+	}
+
+	/**
+	 * Calcula o FEN resultante após aplicar uma sequência de lances UCI a partir de um FEN inicial.
+	 * Usado para converter lances da variante principal (PV) em SAN.
+	 */
+	private static String getFenForPv(String initialFen, List<String> pv, String targetUci) {
+		Board board = new Board();
+		board.loadFromFen(initialFen);
+
+		for (String uci : pv) {
+			if (uci.equals(targetUci)) {
+				return board.getFen();
+			}
+			try {
+				Square from = Square.valueOf(uci.substring(0, 2).toUpperCase());
+				Square to = Square.valueOf(uci.substring(2, 4).toUpperCase());
+				Piece promo = Piece.NONE;
+				if (uci.length() == 5) {
+					Side side = board.getSideToMove();
+					promo = switch (uci.charAt(4)) {
+					case 'q' -> side == Side.WHITE ? Piece.WHITE_QUEEN : Piece.BLACK_QUEEN;
+					case 'r' -> side == Side.WHITE ? Piece.WHITE_ROOK : Piece.BLACK_ROOK;
+					case 'b' -> side == Side.WHITE ? Piece.WHITE_BISHOP : Piece.BLACK_BISHOP;
+					case 'n' -> side == Side.WHITE ? Piece.WHITE_KNIGHT : Piece.BLACK_KNIGHT;
+					default -> Piece.NONE;
+					};
+				}
+				board.doMove(new Move(from, to, promo));
+			} catch (Exception e) {
+				// Se houver erro, retorna o FEN atual para tentar conversão parcial
+				return board.getFen();
+			}
+		}
+		return board.getFen();
 	}
 
 	// ── Broadcast SSE ────────────────────────────────────────────
