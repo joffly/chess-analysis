@@ -160,13 +160,19 @@ public class GameAnalysisService {
 		// Executa análises em paralelo usando CompletableFuture com virtual threads
 		try {
 			List<CompletableFuture<Void>> futures = tasks.stream()
-					.map(task -> CompletableFuture.runAsync(() -> {
-						try {
-							executeAnalysis(task, analyzedCounter, totalPlies);
-						} catch (Exception e) {
-							log.error("Erro ao analisar lance: {}", e.getMessage());
-						}
-					}, Thread.ofVirtual().unstarted())) // Usa thread virtual
+					.map(task -> {
+						CompletableFuture<Void> future = new CompletableFuture<>();
+						Thread.ofVirtual().start(() -> {
+							try {
+								executeAnalysis(task, analyzedCounter, totalPlies);
+								future.complete(null);
+							} catch (Exception e) {
+								log.error("Erro ao analisar lance: {}", e.getMessage());
+								future.completeExceptionally(e);
+							}
+						});
+						return future;
+					})
 					.toList();
 
 			// Aguarda todas as tarefas completarem
