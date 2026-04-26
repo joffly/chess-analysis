@@ -1,6 +1,7 @@
 package com.chess.analyzer.model;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Representa um meio-lance (ply) de uma partida de xadrez.
@@ -61,6 +62,7 @@ public class MoveEntry {
         if (!analyzed) return "?";
         if (mateIn != null) return (mateIn > 0 ? "+M" : "-M") + Math.abs(mateIn);
         if (eval   == null) return "?";
-        return String.format("%+.2f", eval);
+        // Locale.ROOT garante ponto decimal independente da JVM locale (ex: pt-BR usa vírgula)
+        return String.format(Locale.ROOT, "%+.2f", eval);
     }
 }
