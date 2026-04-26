@@ -106,12 +106,8 @@
 				</configuration>
 			</plugin>
 		</plugins>
-		<resources>
-			<resource>
-				<directory>src/main/resources</directory>
-				<filtering>false</filtering>
-			</resource>
-		</resources>
+		<!-- Sem <resources> customizado: usa o padrão do Maven
+		     (src/main/resources inteiro, incluindo db/migration) -->
 	</build>
 
 </project>
