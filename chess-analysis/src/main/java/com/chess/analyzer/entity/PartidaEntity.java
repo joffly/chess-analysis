@@ -1,18 +1,24 @@
 package com.chess.analyzer.entity;
 
 import jakarta.persistence.*;
+
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Entidade JPA que persiste uma partida de xadrez no PostgreSQL.
  *
- * Cada campo do cabeçalho PGN (Seven-Tag Roster + extras Lichess/FIDE)
- * é mapeado em sua própria coluna. A relação com os lances é feita
- * via {@link LanceEntity} com FK {@code partida_id}.
+ * <p>Estratégia de acesso: as anotações estão nos <em>campos</em>, portanto
+ * o Hibernate usa {@code AccessType.FIELD} e não necessita de getters/setters
+ * para ler ou gravar o estado. Os setters foram removidos intencionalmente;
+ * o estado é definido no construtor de domínio e, quando necessário, por
+ * métodos de negócio explícitos.</p>
  *
- * ID e sequence são gerenciados automaticamente pelo PostgreSQL
- * (tipo BIGSERIAL via estratégia SEQUENCE do Hibernate).
+ * <p>O construtor sem argumentos é {@code protected} — visível apenas para
+ * o Hibernate (que instancia a entidade via reflection) e para subclasses
+ * de proxy, mas inacessível para o código de aplicação.</p>
  */
 @Entity
 @Table(name = "partida")
@@ -22,187 +28,142 @@ public class PartidaEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "partida_seq")
     @SequenceGenerator(
-            name      = "partida_seq",
+            name         = "partida_seq",
             sequenceName = "partida_id_seq",
             allocationSize = 1
     )
     @Column(name = "id", nullable = false, updatable = false)
     private Long id;
 
-    // ── Seven-Tag Roster (obrigatórios no padrão PGN) ─────────────────────
+    // ── Seven-Tag Roster ──────────────────────────────────────────────────
+    @Column(name = "event",  length = 255) private String event;
+    @Column(name = "site",   length = 255) private String site;
+    @Column(name = "date",   length = 20)  private String date;
+    @Column(name = "round",  length = 20)  private String round;
+    @Column(name = "white",  length = 255) private String white;
+    @Column(name = "black",  length = 255) private String black;
+    @Column(name = "result", length = 10)  private String result;
 
-    /** [Event "..."] — Nome do torneio ou partida amigável. */
-    @Column(name = "event", length = 255)
-    private String event;
+    // ── Campos extras (Lichess / FIDE / chess.com) ────────────────────────
+    @Column(name = "white_elo",          length = 10)  private String whiteElo;
+    @Column(name = "black_elo",          length = 10)  private String blackElo;
+    @Column(name = "white_rating_diff",  length = 10)  private String whiteRatingDiff;
+    @Column(name = "black_rating_diff",  length = 10)  private String blackRatingDiff;
+    @Column(name = "opening",            length = 255) private String opening;
+    @Column(name = "eco",                length = 10)  private String eco;
+    @Column(name = "time_control",       length = 30)  private String timeControl;
+    @Column(name = "termination",        length = 100) private String termination;
+    @Column(name = "variant",            length = 50)  private String variant;
+    @Column(name = "utc_date",           length = 20)  private String utcDate;
+    @Column(name = "utc_time",           length = 20)  private String utcTime;
 
-    /** [Site "..."] — Cidade/plataforma onde a partida foi jogada. */
-    @Column(name = "site", length = 255)
-    private String site;
+    // ── Metadados internos ────────────────────────────────────────────────
+    @Column(name = "initial_fen", length = 100) private String initialFen;
 
-    /** [Date "YYYY.MM.DD"] — Data da partida no formato PGN. */
-    @Column(name = "date", length = 20)
-    private String date;
-
-    /** [Round "..."] — Rodada do torneio. */
-    @Column(name = "round", length = 20)
-    private String round;
-
-    /** [White "..."] — Nome/username do jogador das peças brancas. */
-    @Column(name = "white", length = 255)
-    private String white;
-
-    /** [Black "..."] — Nome/username do jogador das peças pretas. */
-    @Column(name = "black", length = 255)
-    private String black;
-
-    /** [Result "1-0" | "0-1" | "1/2-1/2" | "*"] — Resultado da partida. */
-    @Column(name = "result", length = 10)
-    private String result;
-
-    // ── Campos extras comuns (Lichess / FIDE / chess.com) ─────────────────
-
-    /** [WhiteElo "..."] — ELO/rating das brancas. */
-    @Column(name = "white_elo", length = 10)
-    private String whiteElo;
-
-    /** [BlackElo "..."] — ELO/rating das pretas. */
-    @Column(name = "black_elo", length = 10)
-    private String blackElo;
-
-    /** [WhiteRatingDiff "+N" | "-N"] — Variação de rating das brancas. */
-    @Column(name = "white_rating_diff", length = 10)
-    private String whiteRatingDiff;
-
-    /** [BlackRatingDiff "+N" | "-N"] — Variação de rating das pretas. */
-    @Column(name = "black_rating_diff", length = 10)
-    private String blackRatingDiff;
-
-    /** [Opening "..."] — Nome da abertura (ECO long name). */
-    @Column(name = "opening", length = 255)
-    private String opening;
-
-    /** [ECO "..."] — Código ECO da abertura (ex: "B20"). */
-    @Column(name = "eco", length = 10)
-    private String eco;
-
-    /** [TimeControl "..."] — Controle de tempo (ex: "600+0", "180+2"). */
-    @Column(name = "time_control", length = 30)
-    private String timeControl;
-
-    /** [Termination "..."] — Motivo do término (Normal, Time forfeit, etc.). */
-    @Column(name = "termination", length = 100)
-    private String termination;
-
-    /** [Variant "..."] — Variante do xadrez (Standard, Chess960, etc.). */
-    @Column(name = "variant", length = 50)
-    private String variant;
-
-    /** [UTCDate "..."] — Data UTC da partida online (Lichess). */
-    @Column(name = "utc_date", length = 20)
-    private String utcDate;
-
-    /** [UTCTime "..."] — Hora UTC da partida online (Lichess). */
-    @Column(name = "utc_time", length = 20)
-    private String utcTime;
-
-    /**
-     * FEN inicial da partida. Presente quando o tag [SetUp "1"] existe;
-     * caso contrário armazena a posição inicial padrão do xadrez.
-     */
-    @Column(name = "initial_fen", length = 100)
-    private String initialFen;
-
-    /** Índice (0-based) da partida no arquivo PGN de origem. */
+    /** Índice 0-based da partida no arquivo PGN de origem. */
     @Column(name = "pgn_index", nullable = false)
     private int pgnIndex;
 
     // ── Relação com lances ────────────────────────────────────────────────
-
-    /**
-     * Lista de lances da partida, ordenados por {@link LanceEntity#getOrdem()}.
-     * Cascade ALL garante que salvar/remover uma partida propaga para os lances.
-     * orphanRemoval remove lances sem partida associada.
-     */
     @OneToMany(mappedBy = "partida", cascade = CascadeType.ALL,
                orphanRemoval = true, fetch = FetchType.LAZY)
     @OrderBy("ordem ASC")
     private List<LanceEntity> lances = new ArrayList<>();
 
-    // ── Construtores ──────────────────────────────────────────────────────
+    // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
+    /** Exigido pela especificação JPA. Não utilizar no código de aplicação. */
+    protected PartidaEntity() {}
 
-    /** Construtor padrão exigido pelo JPA. */
-    public PartidaEntity() {}
+    // ── Construtor de domínio ─────────────────────────────────────────────
+    /**
+     * Cria uma partida a partir dos metadados extraídos de um arquivo PGN.
+     *
+     * @param pgnIndex índice 0-based no arquivo PGN de origem
+     * @param tags     mapa completo de tags do cabeçalho PGN
+     * @param initialFen FEN da posição inicial (posição padrão ou SetUp)
+     */
+    public PartidaEntity(int pgnIndex, Map<String, String> tags, String initialFen) {
+        this.pgnIndex   = pgnIndex;
+        this.initialFen = initialFen;
 
-    // ── Getters e Setters ─────────────────────────────────────────────────
+        // Seven-Tag Roster
+        this.event  = tags.get("Event");
+        this.site   = tags.get("Site");
+        this.date   = tags.get("Date");
+        this.round  = tags.get("Round");
+        this.white  = tags.get("White");
+        this.black  = tags.get("Black");
+        this.result = tags.get("Result");
 
-    public Long getId()                          { return id; }
+        // Campos extras
+        this.whiteElo         = tags.get("WhiteElo");
+        this.blackElo         = tags.get("BlackElo");
+        this.whiteRatingDiff  = tags.get("WhiteRatingDiff");
+        this.blackRatingDiff  = tags.get("BlackRatingDiff");
+        this.opening          = tags.get("Opening");
+        this.eco              = tags.get("ECO");
+        this.timeControl      = tags.get("TimeControl");
+        this.termination      = tags.get("Termination");
+        this.variant          = tags.get("Variant");
+        this.utcDate          = tags.get("UTCDate");
+        this.utcTime          = tags.get("UTCTime");
+    }
 
-    public String getEvent()                     { return event; }
-    public void   setEvent(String event)         { this.event = event; }
+    // ── Getters (somente leitura — sem setters) ───────────────────────────
 
-    public String getSite()                      { return site; }
-    public void   setSite(String site)           { this.site = site; }
+    public Long   getId()              { return id; }
+    public int    getPgnIndex()        { return pgnIndex; }
+    public String getEvent()           { return event; }
+    public String getSite()            { return site; }
+    public String getDate()            { return date; }
+    public String getRound()           { return round; }
+    public String getWhite()           { return white; }
+    public String getBlack()           { return black; }
+    public String getResult()          { return result; }
+    public String getWhiteElo()        { return whiteElo; }
+    public String getBlackElo()        { return blackElo; }
+    public String getWhiteRatingDiff() { return whiteRatingDiff; }
+    public String getBlackRatingDiff() { return blackRatingDiff; }
+    public String getOpening()         { return opening; }
+    public String getEco()             { return eco; }
+    public String getTimeControl()     { return timeControl; }
+    public String getTermination()     { return termination; }
+    public String getVariant()         { return variant; }
+    public String getUtcDate()         { return utcDate; }
+    public String getUtcTime()         { return utcTime; }
+    public String getInitialFen()      { return initialFen; }
 
-    public String getDate()                      { return date; }
-    public void   setDate(String date)           { this.date = date; }
+    /** Retorna uma visão não modificável da lista de lances. */
+    public List<LanceEntity> getLances() {
+        return Collections.unmodifiableList(lances);
+    }
 
-    public String getRound()                     { return round; }
-    public void   setRound(String round)         { this.round = round; }
+    // ── Métodos de domínio ────────────────────────────────────────────────
 
-    public String getWhite()                     { return white; }
-    public void   setWhite(String white)         { this.white = white; }
-
-    public String getBlack()                     { return black; }
-    public void   setBlack(String black)         { this.black = black; }
-
-    public String getResult()                    { return result; }
-    public void   setResult(String result)       { this.result = result; }
-
-    public String getWhiteElo()                  { return whiteElo; }
-    public void   setWhiteElo(String whiteElo)   { this.whiteElo = whiteElo; }
-
-    public String getBlackElo()                  { return blackElo; }
-    public void   setBlackElo(String blackElo)   { this.blackElo = blackElo; }
-
-    public String getWhiteRatingDiff()           { return whiteRatingDiff; }
-    public void   setWhiteRatingDiff(String v)   { this.whiteRatingDiff = v; }
-
-    public String getBlackRatingDiff()           { return blackRatingDiff; }
-    public void   setBlackRatingDiff(String v)   { this.blackRatingDiff = v; }
-
-    public String getOpening()                   { return opening; }
-    public void   setOpening(String opening)     { this.opening = opening; }
-
-    public String getEco()                       { return eco; }
-    public void   setEco(String eco)             { this.eco = eco; }
-
-    public String getTimeControl()               { return timeControl; }
-    public void   setTimeControl(String tc)      { this.timeControl = tc; }
-
-    public String getTermination()               { return termination; }
-    public void   setTermination(String t)       { this.termination = t; }
-
-    public String getVariant()                   { return variant; }
-    public void   setVariant(String variant)     { this.variant = variant; }
-
-    public String getUtcDate()                   { return utcDate; }
-    public void   setUtcDate(String utcDate)     { this.utcDate = utcDate; }
-
-    public String getUtcTime()                   { return utcTime; }
-    public void   setUtcTime(String utcTime)     { this.utcTime = utcTime; }
-
-    public String getInitialFen()                { return initialFen; }
-    public void   setInitialFen(String fen)      { this.initialFen = fen; }
-
-    public int  getPgnIndex()                    { return pgnIndex; }
-    public void setPgnIndex(int pgnIndex)        { this.pgnIndex = pgnIndex; }
-
-    public List<LanceEntity> getLances()         { return lances; }
-    public void setLances(List<LanceEntity> l)   { this.lances = l; }
-
-    /** Utilitário: adiciona um lance mantendo o bidirecional. */
+    /**
+     * Adiciona um lance à partida, mantendo a consistência bidirecional.
+     * É o único ponto de entrada para associar um {@link LanceEntity} a esta partida.
+     */
     public void addLance(LanceEntity lance) {
-        lance.setPartida(this);
-        this.lances.add(lance);
+        lance.associarPartida(this);
+        lances.add(lance);
+    }
+
+    /** Atualiza o resultado da partida (ex: após correção de importação). */
+    public void corrigirResultado(String novoResultado) {
+        this.result = novoResultado;
+    }
+
+    /** Título legível para exibição: "White vs Black — Event Date". */
+    public String titulo() {
+        String w = nvl(white);
+        String b = nvl(black);
+        String e = event  != null && !event.isBlank()  ? event  : "";
+        String d = date   != null && !date.isBlank()   ? date   : "";
+        return ("%s vs %s — %s %s".formatted(w, b, e, d)).strip();
+    }
+
+    private static String nvl(String v) {
+        return (v == null || v.isBlank() || "?".equals(v)) ? "?" : v;
     }
 }

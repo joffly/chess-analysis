@@ -2,20 +2,24 @@ package com.chess.analyzer.entity;
 
 import jakarta.persistence.*;
 
+import java.util.List;
+
 /**
  * Entidade JPA que persiste um meio-lance (ply) de uma partida de xadrez.
  *
- * Cada linha representa um ply: e.g. 1.e4 (brancas) e 1...e5 (pretas)
- * são dois registros distintos com {@code ordem} 1 e 2 respectivamente.
+ * <p>Estratégia de acesso: {@code AccessType.FIELD} — anotações nos campos,
+ * sem necessidade de getters/setters para o ORM. Setters removidos;
+ * estado imutável definido em construção, exceto pelos campos de análise
+ * Stockfish que são preenchidos assincronamente via {@link #registrarAnalise}.</p>
  *
- * A FK {@code partida_id} aponta para {@link PartidaEntity}.
- * ID e sequence são gerenciados automaticamente pelo PostgreSQL.
+ * <p>Construtor sem argumentos {@code protected} — visível apenas para o
+ * Hibernate (instanciação via proxy/reflection).</p>
  */
 @Entity
 @Table(
     name = "lance",
     indexes = {
-        @Index(name = "idx_lance_partida_id", columnList = "partida_id"),
+        @Index(name = "idx_lance_partida_id",    columnList = "partida_id"),
         @Index(name = "idx_lance_partida_ordem", columnList = "partida_id, ordem")
     }
 )
@@ -25,119 +29,115 @@ public class LanceEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "lance_seq")
     @SequenceGenerator(
-            name         = "lance_seq",
-            sequenceName = "lance_id_seq",
-            allocationSize = 50   // batch insert eficiente
+            name           = "lance_seq",
+            sequenceName   = "lance_id_seq",
+            allocationSize = 50
     )
     @Column(name = "id", nullable = false, updatable = false)
     private Long id;
 
     // ── Chave estrangeira ─────────────────────────────────────────────────
-
-    /** Partida à qual este lance pertence. */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "partida_id", nullable = false,
                 foreignKey = @ForeignKey(name = "fk_lance_partida"))
     private PartidaEntity partida;
 
-    // ── Dados do lance ────────────────────────────────────────────────────
+    // ── Dados do lance (imutáveis após construção) ────────────────────────
+    @Column(name = "ordem",        nullable = false) private int     ordem;
+    @Column(name = "numero_lance", nullable = false) private int     numeroLance;
+    @Column(name = "vez_brancas",  nullable = false) private boolean vezBrancas;
+    @Column(name = "uci",  length = 10,  nullable = false) private String uci;
+    @Column(name = "san",  length = 20,  nullable = false) private String san;
+    @Column(name = "fen_antes",  length = 100, nullable = false) private String fenAntes;
+    @Column(name = "fen_depois", length = 100, nullable = false) private String fenDepois;
+
+    // ── Análise Stockfish (nullable — preenchida assincronamente) ─────────
+    @Column(name = "eval")                              private Double  eval;
+    @Column(name = "mate_em")                           private Integer mateEm;
+    @Column(name = "melhor_lance",     length = 10)     private String  melhorLance;
+    @Column(name = "variante_principal", length = 500)  private String  variantePrincipal;
+    @Column(name = "analisado", nullable = false)       private boolean analisado = false;
+
+    // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
+    /** Exigido pela especificação JPA. Não utilizar no código de aplicação. */
+    protected LanceEntity() {}
+
+    // ── Construtor de domínio ─────────────────────────────────────────────
+    /**
+     * Cria um lance com todos os dados obrigatórios.
+     *
+     * @param ordem       posição sequencial 1-based dentro da partida
+     * @param numeroLance número do lance no sentido xadrez (1.e4 e 1...e5 = numero 1)
+     * @param vezBrancas  {@code true} se for o ply das brancas
+     * @param uci         notação UCI (ex: "e2e4")
+     * @param san         notação SAN (ex: "e4")
+     * @param fenAntes    FEN antes do lance
+     * @param fenDepois   FEN depois do lance
+     */
+    public LanceEntity(int ordem, int numeroLance, boolean vezBrancas,
+                       String uci, String san,
+                       String fenAntes, String fenDepois) {
+        this.ordem       = ordem;
+        this.numeroLance = numeroLance;
+        this.vezBrancas  = vezBrancas;
+        this.uci         = uci;
+        this.san         = san;
+        this.fenAntes    = fenAntes;
+        this.fenDepois   = fenDepois;
+    }
+
+    // ── Getters (somente leitura) ─────────────────────────────────────────
+
+    public Long          getId()                { return id; }
+    public PartidaEntity getPartida()           { return partida; }
+    public int           getOrdem()             { return ordem; }
+    public int           getNumeroLance()       { return numeroLance; }
+    public boolean       isVezBrancas()         { return vezBrancas; }
+    public String        getUci()               { return uci; }
+    public String        getSan()               { return san; }
+    public String        getFenAntes()          { return fenAntes; }
+    public String        getFenDepois()         { return fenDepois; }
+    public Double        getEval()              { return eval; }
+    public Integer       getMateEm()            { return mateEm; }
+    public String        getMelhorLance()       { return melhorLance; }
+    public String        getVariantePrincipal() { return variantePrincipal; }
+    public boolean       isAnalisado()          { return analisado; }
+
+    // ── Métodos de domínio ────────────────────────────────────────────────
 
     /**
-     * Posição sequencial do lance dentro da partida (1-based).
-     * O par (partida_id, ordem) identifica unicamente um ply.
+     * Registra o resultado da análise do Stockfish.
+     * Único ponto de escrita para os campos de análise.
+     *
+     * @param eval             avaliação em peões (perspectiva brancas)
+     * @param mateEm           mate forçado em N meios-lances; {@code null} se inexistente
+     * @param melhorLance      melhor resposta em UCI
+     * @param variantePrincipal PV serializado (lances UCI separados por espaço)
      */
-    @Column(name = "ordem", nullable = false)
-    private int ordem;
+    public void registrarAnalise(Double eval, Integer mateEm,
+                                 String melhorLance, List<String> variantePrincipal) {
+        this.eval              = eval;
+        this.mateEm            = mateEm;
+        this.melhorLance       = melhorLance;
+        this.variantePrincipal = variantePrincipal != null
+                                 ? String.join(" ", variantePrincipal)
+                                 : null;
+        this.analisado         = true;
+    }
 
-    /** Número do lance (brancas e pretas compartilham o mesmo número). */
-    @Column(name = "numero_lance", nullable = false)
-    private int numeroLance;
+    /**
+     * Vincula este lance à sua partida.
+     * Chamado exclusivamente por {@link PartidaEntity#addLance(LanceEntity)}.
+     */
+    void associarPartida(PartidaEntity partida) {
+        this.partida = partida;
+    }
 
-    /** {@code true} se for o lance das peças brancas. */
-    @Column(name = "vez_brancas", nullable = false)
-    private boolean vezBrancas;
-
-    /** Notação UCI do lance (ex: "e2e4", "g1f3", "e7e8q"). */
-    @Column(name = "uci", length = 10, nullable = false)
-    private String uci;
-
-    /** Notação SAN do lance (ex: "e4", "Nf3", "e8=Q"). */
-    @Column(name = "san", length = 20, nullable = false)
-    private String san;
-
-    /** FEN da posição imediatamente ANTES deste lance. */
-    @Column(name = "fen_antes", length = 100, nullable = false)
-    private String fenAntes;
-
-    /** FEN da posição imediatamente APÓS este lance. */
-    @Column(name = "fen_depois", length = 100, nullable = false)
-    private String fenDepois;
-
-    // ── Resultados de análise Stockfish (opcionais) ───────────────────────
-
-    /** Avaliação em centipeões / 100, perspectiva das brancas. {@code null} se não analisado. */
-    @Column(name = "eval")
-    private Double eval;
-
-    /** Mate forçado em N meios-lances. {@code null} se não há mate forçado. */
-    @Column(name = "mate_em")
-    private Integer mateEm;
-
-    /** Melhor lance sugerido pelo Stockfish em notação UCI. */
-    @Column(name = "melhor_lance", length = 10)
-    private String melhorLance;
-
-    /** Variante principal (PV) serializada como string separada por espaços. */
-    @Column(name = "variante_principal", length = 500)
-    private String variantePrincipal;
-
-    /** {@code true} se este lance já foi analisado pelo Stockfish. */
-    @Column(name = "analisado", nullable = false)
-    private boolean analisado = false;
-
-    // ── Construtor padrão JPA ─────────────────────────────────────────────
-    public LanceEntity() {}
-
-    // ── Getters e Setters ─────────────────────────────────────────────────
-
-    public Long getId()                              { return id; }
-
-    public PartidaEntity getPartida()                { return partida; }
-    public void          setPartida(PartidaEntity p) { this.partida = p; }
-
-    public int  getOrdem()                           { return ordem; }
-    public void setOrdem(int ordem)                  { this.ordem = ordem; }
-
-    public int  getNumeroLance()                     { return numeroLance; }
-    public void setNumeroLance(int n)                { this.numeroLance = n; }
-
-    public boolean isVezBrancas()                    { return vezBrancas; }
-    public void    setVezBrancas(boolean b)          { this.vezBrancas = b; }
-
-    public String getUci()                           { return uci; }
-    public void   setUci(String uci)                 { this.uci = uci; }
-
-    public String getSan()                           { return san; }
-    public void   setSan(String san)                 { this.san = san; }
-
-    public String getFenAntes()                      { return fenAntes; }
-    public void   setFenAntes(String fen)            { this.fenAntes = fen; }
-
-    public String getFenDepois()                     { return fenDepois; }
-    public void   setFenDepois(String fen)           { this.fenDepois = fen; }
-
-    public Double  getEval()                         { return eval; }
-    public void    setEval(Double eval)              { this.eval = eval; }
-
-    public Integer getMateEm()                       { return mateEm; }
-    public void    setMateEm(Integer m)              { this.mateEm = m; }
-
-    public String getMelhorLance()                   { return melhorLance; }
-    public void   setMelhorLance(String m)           { this.melhorLance = m; }
-
-    public String getVariantePrincipal()             { return variantePrincipal; }
-    public void   setVariantePrincipal(String vp)    { this.variantePrincipal = vp; }
-
-    public boolean isAnalisado()                     { return analisado; }
-    public void    setAnalisado(boolean a)           { this.analisado = a; }
+    /** Formatação legível da avaliação: "+0.28", "-1.35", "+M3", "-M5", "?". */
+    public String evalFormatado() {
+        if (!analisado) return "?";
+        if (mateEm != null) return (mateEm > 0 ? "+M" : "-M") + Math.abs(mateEm);
+        if (eval   == null) return "?";
+        return "%+.2f".formatted(eval);
+    }
 }
