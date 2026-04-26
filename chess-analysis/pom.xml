@@ -58,6 +58,16 @@
       <scope>runtime</scope>
     </dependency>
 
+    <!-- Flyway - versionamento de schema do banco -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
     <!-- Chess library -->
     <dependency>
       <groupId>com.github.bhlangonijr</groupId>
