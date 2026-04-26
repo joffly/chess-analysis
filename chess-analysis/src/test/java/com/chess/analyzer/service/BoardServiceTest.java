@@ -118,11 +118,13 @@ class BoardServiceTest {
     }
 
     @Test
-    @DisplayName("Xeque-mate do pastor: checkmate=true e gameOver=true")
+    @DisplayName("Scholar's Mate (Qxf7#): checkmate=true e gameOver=true")
     void applyMove_checkmate_flagsAreTrue() {
-        // Posição antes do lance Qxf7# (Scholar's Mate)
-        String fenBefore = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/8/PPPP1QPP/RNB1K1NR w KQkq - 4 4";
-        MoveRequest req = new MoveRequest(fenBefore, "f2", "f7", null);
+        // Posição após 1.e4 e5 2.Bc4 Nc6 3.Qh5 Nf6??
+        // A dama branca está em h5, prestes a executar Qxf7#
+        // FEN verificada: dama=h5, bispo=c4, peões intactos, cavalo preto em c6 e f6
+        String fenBefore = "rnbqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4";
+        MoveRequest req = new MoveRequest(fenBefore, "h5", "f7", null);
         MoveResponse resp = service.applyMove(req);
 
         assertThat(resp.ok()).isTrue();
