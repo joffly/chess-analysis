@@ -20,7 +20,8 @@ import java.util.List;
     name = "lance",
     indexes = {
         @Index(name = "idx_lance_partida_id",    columnList = "partida_id"),
-        @Index(name = "idx_lance_partida_ordem", columnList = "partida_id, ordem")
+        @Index(name = "idx_lance_partida_ordem", columnList = "partida_id, ordem"),
+        @Index(name = "idx_lance_fen_depois",    columnList = "fen_depois")
     }
 )
 public class LanceEntity {
@@ -52,11 +53,11 @@ public class LanceEntity {
     @Column(name = "fen_depois", length = 100, nullable = false) private String fenDepois;
 
     // ── Análise Stockfish (nullable — preenchida assincronamente) ─────────
-    @Column(name = "eval")                              private Double  eval;
-    @Column(name = "mate_em")                           private Integer mateEm;
-    @Column(name = "melhor_lance",     length = 10)     private String  melhorLance;
-    @Column(name = "variante_principal", length = 500)  private String  variantePrincipal;
-    @Column(name = "analisado", nullable = false)       private boolean analisado = false;
+    @Column(name = "eval")                                           private Double  eval;
+    @Column(name = "mate_em")                                        private Integer mateEm;
+    @Column(name = "melhor_lance",       length = 10)                private String  melhorLance;
+    @Column(name = "variante_principal", columnDefinition = "TEXT")  private String  variantePrincipal;
+    @Column(name = "analisado", nullable = false)                    private boolean analisado = false;
 
     // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
     /** Exigido pela especificação JPA. Não utilizar no código de aplicação. */
@@ -109,9 +110,9 @@ public class LanceEntity {
      * Registra o resultado da análise do Stockfish.
      * Único ponto de escrita para os campos de análise.
      *
-     * @param eval             avaliação em peões (perspectiva brancas)
-     * @param mateEm           mate forçado em N meios-lances; {@code null} se inexistente
-     * @param melhorLance      melhor resposta em UCI
+     * @param eval              avaliação em peões (perspectiva brancas)
+     * @param mateEm            mate forçado em N meios-lances; {@code null} se inexistente
+     * @param melhorLance       melhor resposta em UCI
      * @param variantePrincipal PV serializado (lances UCI separados por espaço)
      */
     public void registrarAnalise(Double eval, Integer mateEm,
