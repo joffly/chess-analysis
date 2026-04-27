@@ -14,8 +14,6 @@
 --    lance:
 --      6. variante_principal           : VARCHAR(500) -> TEXT
 --      7. Novo indice em fen_depois para busca de posicoes.
---      8. blunder                      : coluna nova BOOLEAN NOT NULL DEFAULT FALSE
---      9. Novo indice parcial em (partida_id, blunder) para listar blunders por partida.
 -- ============================================================
 
 BEGIN;
@@ -76,7 +74,7 @@ ALTER TABLE partida
               END;
 
 COMMENT ON COLUMN partida.black_rating_diff
-    IS 'Variacao de rating das pretas apos a partida (INTEGER, pode ser negativo).';
+    IS 'Variacao de rating das brancas apos a partida (INTEGER, pode ser negativo).';
 
 -- ------------------------------------------------------------
 -- 5. date: VARCHAR(20) -> DATE
@@ -107,8 +105,8 @@ ALTER TABLE partida ADD COLUMN IF NOT EXISTS utc_datetime TIMESTAMPTZ;
 UPDATE partida
 SET utc_datetime =
     CASE
-        WHEN utc_date IS NULL OR utc_time IS NULL        THEN NULL
-        WHEN utc_date LIKE '%?%' OR utc_time LIKE '%?%'  THEN NULL
+        WHEN utc_date IS NULL OR utc_time IS NULL     THEN NULL
+        WHEN utc_date LIKE '%?%' OR utc_time LIKE '%?%' THEN NULL
         WHEN (replace(utc_date, '.', '-') || ' ' || utc_time)
                  ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'
             THEN (replace(utc_date, '.', '-') || ' ' || utc_time)::TIMESTAMPTZ
@@ -144,27 +142,9 @@ COMMENT ON COLUMN lance.variante_principal
     IS 'Principal Variation (PV) do Stockfish, lances UCI separados por espaco (TEXT sem limite).';
 
 -- ------------------------------------------------------------
--- 9. Indice em fen_depois para buscas de posicao.
+-- 9. Indice em fen_depois para buscas de posicao
 --    Permite queries: "em quais partidas esta posicao apareceu?"
 -- ------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_lance_fen_depois ON lance (fen_depois);
-
--- ------------------------------------------------------------
--- 10. blunder: nova coluna BOOLEAN NOT NULL DEFAULT FALSE.
---     Marcada como true quando o Stockfish classifica o lance
---     como blunder (queda de avaliacao >= 2 peoes em relacao
---     ao melhor lance disponivel na posicao).
--- ------------------------------------------------------------
-ALTER TABLE lance
-    ADD COLUMN IF NOT EXISTS blunder BOOLEAN NOT NULL DEFAULT FALSE;
-
-COMMENT ON COLUMN lance.blunder
-    IS 'TRUE quando o lance e classificado como blunder pelo Stockfish (queda >= 2 peoes). DEFAULT FALSE.';
-
--- Indice parcial: apenas os lances que sao blunder, filtrado por partida.
--- Util para listar todos os blunders de uma partida especifica.
-CREATE INDEX IF NOT EXISTS idx_lance_blunder
-    ON lance (partida_id)
-    WHERE blunder = TRUE;
 
 COMMIT;
