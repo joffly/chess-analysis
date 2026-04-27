@@ -21,7 +21,8 @@ import java.util.List;
     indexes = {
         @Index(name = "idx_lance_partida_id",    columnList = "partida_id"),
         @Index(name = "idx_lance_partida_ordem", columnList = "partida_id, ordem"),
-        @Index(name = "idx_lance_fen_depois",    columnList = "fen_depois")
+        @Index(name = "idx_lance_fen_depois",    columnList = "fen_depois"),
+        @Index(name = "idx_lance_blunder",       columnList = "partida_id, blunder")
     }
 )
 public class LanceEntity {
@@ -57,7 +58,15 @@ public class LanceEntity {
     @Column(name = "mate_em")                                        private Integer mateEm;
     @Column(name = "melhor_lance",       length = 10)                private String  melhorLance;
     @Column(name = "variante_principal", columnDefinition = "TEXT")  private String  variantePrincipal;
-    @Column(name = "analisado", nullable = false)                    private boolean analisado = false;
+    @Column(name = "analisado",  nullable = false)                   private boolean analisado = false;
+
+    /**
+     * Indica se este lance foi classificado como blunder pelo Stockfish.
+     * Preenchido em conjunto com os demais campos de análise via {@link #registrarAnalise}.
+     * Convenção: queda de avaliação >= 2 peões em relação ao melhor lance disponível.
+     */
+    @Column(name = "blunder", nullable = false)
+    private boolean blunder = false;
 
     // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
     /** Exigido pela especificação JPA. Não utilizar no código de aplicação. */
@@ -103,6 +112,7 @@ public class LanceEntity {
     public String        getMelhorLance()       { return melhorLance; }
     public String        getVariantePrincipal() { return variantePrincipal; }
     public boolean       isAnalisado()          { return analisado; }
+    public boolean       isBlunder()            { return blunder; }
 
     // ── Métodos de domínio ────────────────────────────────────────────────
 
@@ -114,15 +124,18 @@ public class LanceEntity {
      * @param mateEm            mate forçado em N meios-lances; {@code null} se inexistente
      * @param melhorLance       melhor resposta em UCI
      * @param variantePrincipal PV serializado (lances UCI separados por espaço)
+     * @param blunder           {@code true} se a queda de avaliação classificar como blunder
      */
     public void registrarAnalise(Double eval, Integer mateEm,
-                                 String melhorLance, List<String> variantePrincipal) {
+                                 String melhorLance, List<String> variantePrincipal,
+                                 boolean blunder) {
         this.eval              = eval;
         this.mateEm            = mateEm;
         this.melhorLance       = melhorLance;
         this.variantePrincipal = variantePrincipal != null
                                  ? String.join(" ", variantePrincipal)
                                  : null;
+        this.blunder           = blunder;
         this.analisado         = true;
     }
 
