@@ -9,6 +9,7 @@ import com.chess.analyzer.repository.PartidaRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
@@ -46,13 +47,16 @@ public class PartidaSaveService {
     }
 
     /**
-     * Salva uma lista de partidas analisadas, aplicando upsert por {@code gameId}.
+     * Salva uma lista de partidas analisadas.
+     *
+     * <p>Não há transação envolvendo o loop inteiro: cada partida é commitada
+     * individualmente por {@link #upsertPartida(GameData)}, de modo que uma
+     * falha numa partida não reverte as que já foram salvas.</p>
      *
      * @param games        lista de GameData com análise
      * @param onlyAnalyzed se true, ignora partidas sem análise completa
      * @return lista de resultados por partida
      */
-    @Transactional
     public List<SaveResult> salvarPartidasAnalisadas(List<GameData> games, boolean onlyAnalyzed) {
         List<SaveResult> results = new ArrayList<>();
 
@@ -77,9 +81,17 @@ public class PartidaSaveService {
         return results;
     }
 
-    // ── Upsert ──────────────────────────────────────────────────────────
+    // ── Upsert — cada chamada roda em sua própria transação ──────────────────
 
-    private SaveResult upsertPartida(GameData game) {
+    /**
+     * Insere ou atualiza uma única partida em uma transação própria.
+     *
+     * <p>{@code REQUIRES_NEW} suspende qualquer transação externa (caso este
+     * método seja chamado de dentro de outra transação) e garante um commit
+     * imediato ao término, independentemente do restante do loop.</p>
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public SaveResult upsertPartida(GameData game) {
         String gameId = game.getGameId();
         Optional<PartidaEntity> existente = partidaRepository.findByGameId(gameId);
 
@@ -93,7 +105,7 @@ public class PartidaSaveService {
             return SaveResult.atualizada(game.getIndex(), game.getTitle());
         } else {
             // INSERT: cria entidade nova
-            Map<String, String> tags  = game.getTags();
+            Map<String, String> tags = game.getTags();
             String fontePgn = tags.getOrDefault("__fonte_pgn__", "unknown");
             PartidaEntity entidade = new PartidaEntity(
                     game.getIndex(), fontePgn, gameId, tags, game.getInitialFen());
