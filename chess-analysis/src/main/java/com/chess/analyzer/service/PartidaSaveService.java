@@ -46,9 +46,7 @@ public class PartidaSaveService {
     }
 
     /**
-     * Salva uma lista de partidas analisadas, aplicando upsert com checagem dupla:
-     * 1. Pela chave (fontePgn + pgnIndex) — reimportação do mesmo arquivo.
-     * 2. Pelo conteúdo (white + black + event + round + result) — duplicata cross-arquivo.
+     * Salva uma lista de partidas analisadas, aplicando upsert por {@code gameId}.
      *
      * @param games        lista de GameData com análise
      * @param onlyAnalyzed se true, ignora partidas sem análise completa
@@ -82,24 +80,8 @@ public class PartidaSaveService {
     // ── Upsert ──────────────────────────────────────────────────────────
 
     private SaveResult upsertPartida(GameData game) {
-        Map<String, String> tags = game.getTags();
-        String fontePgn = tags.getOrDefault("__fonte_pgn__", "unknown");
-        int    pgnIndex = game.getIndex();
-
-        // 1ª verificação: chave estrutural (mesmo arquivo + mesmo índice)
-        Optional<PartidaEntity> existente =
-                partidaRepository.findByFontePgnAndPgnIndex(fontePgn, pgnIndex);
-
-        // 2ª verificação: conteúdo da partida (cross-arquivo)
-        if (existente.isEmpty()) {
-            existente = partidaRepository.findByGameIdentity(
-                    tags.get("White"),
-                    tags.get("Black"),
-                    tags.get("Event"),
-                    tags.get("Round"),
-                    tags.get("Result")
-            );
-        }
+        String gameId = game.getGameId();
+        Optional<PartidaEntity> existente = partidaRepository.findByGameId(gameId);
 
         if (existente.isPresent()) {
             // UPDATE: apaga lances antigos e regrava com avaliações novas
@@ -108,14 +90,16 @@ public class PartidaSaveService {
             lanceRepository.flush();
             adicionarLances(entidade, game);
             partidaRepository.save(entidade);
-            return SaveResult.atualizada(pgnIndex, game.getTitle());
+            return SaveResult.atualizada(game.getIndex(), game.getTitle());
         } else {
             // INSERT: cria entidade nova
-            PartidaEntity entidade = new PartidaEntity(pgnIndex, fontePgn, tags,
-                    game.getInitialFen());
+            Map<String, String> tags  = game.getTags();
+            String fontePgn = tags.getOrDefault("__fonte_pgn__", "unknown");
+            PartidaEntity entidade = new PartidaEntity(
+                    game.getIndex(), fontePgn, gameId, tags, game.getInitialFen());
             adicionarLances(entidade, game);
             partidaRepository.save(entidade);
-            return SaveResult.criada(pgnIndex, game.getTitle());
+            return SaveResult.criada(game.getIndex(), game.getTitle());
         }
     }
 

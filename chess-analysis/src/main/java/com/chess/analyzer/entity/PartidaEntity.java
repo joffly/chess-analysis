@@ -12,24 +12,21 @@ import java.util.Map;
 /**
  * Entidade JPA que persiste uma partida de xadrez no PostgreSQL.
  *
- * <p>Estratégia de acesso: as anotações estão nos <em>campos</em>, portanto
- * o Hibernate usa {@code AccessType.FIELD} e não necessita de getters/setters
- * para ler ou gravar o estado. Os setters foram removidos intencionalmente;
- * o estado é definido no construtor de domínio e, quando necessário, por
- * métodos de negócio explícitos.</p>
- *
- * <p>O construtor sem argumentos é {@code protected} — visível apenas para
- * o Hibernate (que instancia a entidade via reflection) e para subclasses
- * de proxy, mas inacessível para o código de aplicação.</p>
+ * <p>A identidade de negócio é representada pelo campo {@code gameId}: um
+ * SHA-256 hex (64 chars) calculado sobre os 7 campos do Seven-Tag Roster
+ * mais o FEN inicial. Esse valor é único no banco ({@code UNIQUE} constraint)
+ * e serve como critério exclusivo de upsert — eliminando a necessidade da
+ * checagem dupla anterior ({@code fontePgn+pgnIndex} / {@code gameIdentity}).</p>
  */
 @Entity
 @Table(
     name = "partida",
     indexes = {
-        @Index(name = "idx_partida_eco",   columnList = "eco"),
-        @Index(name = "idx_partida_white", columnList = "white"),
-        @Index(name = "idx_partida_black", columnList = "black"),
-        @Index(name = "idx_partida_fonte", columnList = "fonte_pgn")
+        @Index(name = "idx_partida_eco",     columnList = "eco"),
+        @Index(name = "idx_partida_white",   columnList = "white"),
+        @Index(name = "idx_partida_black",   columnList = "black"),
+        @Index(name = "idx_partida_fonte",   columnList = "fonte_pgn"),
+        @Index(name = "idx_partida_game_id", columnList = "game_id")
     }
 )
 public class PartidaEntity {
@@ -44,6 +41,18 @@ public class PartidaEntity {
     )
     @Column(name = "id", nullable = false, updatable = false)
     private Long id;
+
+    /**
+     * Identificador estável de negócio: SHA-256 hex dos campos identitários
+     * ({@code White|Black|Event|Site|Date|Round|Result|initialFen}).
+     *
+     * <p>Imutável após a criação ({@code updatable = false}) e único no banco
+     * ({@code unique = true}). É o único critério usado para detectar
+     * duplicatas / reimportações.</p>
+     */
+    @Column(name = "game_id", length = 64, nullable = false,
+            unique = true, updatable = false)
+    private String gameId;
 
     // ── Seven-Tag Roster ──────────────────────────────────────────────────
     @Column(name = "event",  length = 255) private String event;
@@ -83,16 +92,16 @@ public class PartidaEntity {
      */
     @Column(name = "utc_datetime") private LocalDateTime utcDatetime;
 
-    // ── Metadados internos ────────────────────────────────────────────────
+    // ── Metadados internos (rastreabilidade de importação) ────────────────
     @Column(name = "initial_fen", length = 100) private String initialFen;
 
-    /** Índice 0-based da partida no arquivo PGN de origem. */
+    /** Índice 0-based da partida no arquivo PGN de origem (apenas rastreabilidade). */
     @Column(name = "pgn_index", nullable = false)
     private int pgnIndex;
 
     /**
-     * Nome ou hash do arquivo PGN de origem.
-     * Usado em conjunto com {@code pgnIndex} para detectar reimportações duplicadas.
+     * Nome ou hash do arquivo PGN de origem (apenas rastreabilidade).
+     * Não é mais usado como critério de upsert — substituído por {@code gameId}.
      */
     @Column(name = "fonte_pgn", length = 255)
     private String fontePgn;
@@ -104,7 +113,6 @@ public class PartidaEntity {
     private List<LanceEntity> lances = new ArrayList<>();
 
     // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
-    /** Exigido pela especificação JPA. Não utilizar no código de aplicação. */
     protected PartidaEntity() {}
 
     // ── Construtor de domínio ─────────────────────────────────────────────
@@ -112,14 +120,16 @@ public class PartidaEntity {
      * Cria uma partida a partir dos metadados extraídos de um arquivo PGN.
      *
      * @param pgnIndex   índice 0-based no arquivo PGN de origem
-     * @param fontePgn   nome ou hash do arquivo PGN (para controle de duplicatas)
+     * @param fontePgn   nome ou hash do arquivo PGN (rastreabilidade)
+     * @param gameId     SHA-256 hex calculado por {@link com.chess.analyzer.model.GameData#getGameId()}
      * @param tags       mapa completo de tags do cabeçalho PGN
      * @param initialFen FEN da posição inicial (posição padrão ou SetUp)
      */
-    public PartidaEntity(int pgnIndex, String fontePgn,
+    public PartidaEntity(int pgnIndex, String fontePgn, String gameId,
                          Map<String, String> tags, String initialFen) {
         this.pgnIndex   = pgnIndex;
         this.fontePgn   = fontePgn;
+        this.gameId     = gameId;
         this.initialFen = initialFen;
 
         // Seven-Tag Roster
@@ -147,6 +157,7 @@ public class PartidaEntity {
     // ── Getters (somente leitura — sem setters) ───────────────────────────
 
     public Long          getId()              { return id; }
+    public String        getGameId()          { return gameId; }
     public int           getPgnIndex()        { return pgnIndex; }
     public String        getFontePgn()        { return fontePgn; }
     public String        getEvent()           { return event; }
@@ -175,21 +186,15 @@ public class PartidaEntity {
 
     // ── Métodos de domínio ────────────────────────────────────────────────
 
-    /**
-     * Adiciona um lance à partida, mantendo a consistência bidirecional.
-     * É o único ponto de entrada para associar um {@link LanceEntity} a esta partida.
-     */
     public void addLance(LanceEntity lance) {
         lance.associarPartida(this);
         lances.add(lance);
     }
 
-    /** Atualiza o resultado da partida (ex: após correção de importação). */
     public void corrigirResultado(String novoResultado) {
         this.result = novoResultado;
     }
 
-    /** Título legível para exibição: "White vs Black — Event Date". */
     public String titulo() {
         String w = nvl(white);
         String b = nvl(black);
@@ -200,10 +205,6 @@ public class PartidaEntity {
 
     // ── Helpers de parse ──────────────────────────────────────────────────
 
-    /**
-     * Converte a tag "Date" do PGN (formato "YYYY.MM.DD") em {@link LocalDate}.
-     * Retorna {@code null} para valores ausentes, "????.??.??" ou mal formados.
-     */
     private static LocalDate parseDate(String raw) {
         if (raw == null || raw.contains("?")) return null;
         try {
@@ -213,10 +214,6 @@ public class PartidaEntity {
         }
     }
 
-    /**
-     * Combina as tags UTCDate ("YYYY.MM.DD") e UTCTime ("HH:MM:SS") em
-     * {@link LocalDateTime}. Retorna {@code null} se qualquer tag for nula ou inválida.
-     */
     private static LocalDateTime parseUtcDatetime(String rawDate, String rawTime) {
         if (rawDate == null || rawTime == null
                 || rawDate.contains("?") || rawTime.contains("?")) return null;
@@ -233,7 +230,6 @@ public class PartidaEntity {
         }
     }
 
-    /** Converte string para Integer, retornando {@code null} em caso de falha. */
     private static Integer parseIntOrNull(String raw) {
         if (raw == null || raw.isBlank() || "?".equals(raw.trim())) return null;
         try {

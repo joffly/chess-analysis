@@ -1,5 +1,9 @@
 package com.chess.analyzer.model;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -8,10 +12,10 @@ import java.util.Map;
  */
 public class GameData {
 
-	private final int index; // posição no arquivo PGN (0-based)
+	private final int index;              // posição no arquivo PGN (0-based)
 	private final Map<String, String> tags; // cabeçalhos Seven-Tag Roster + extras
-	private final String initialFen; // FEN inicial (START ou SetUp)
-	private final List<MoveEntry> moves; // lista de meio-lances
+	private final String initialFen;      // FEN inicial (START ou SetUp)
+	private final List<MoveEntry> moves;  // lista de meio-lances
 
 	private volatile boolean fullyAnalyzed;
 
@@ -55,13 +59,41 @@ public class GameData {
 		return ("%s vs %s — %s %s".formatted(w, b, e, d)).strip();
 	}
 
+	/**
+	 * Identificador estável da partida: SHA-256 (hex, 64 chars) sobre a
+	 * concatenação determinística dos 7 campos identitários do Seven-Tag Roster
+	 * mais o FEN inicial.
+	 *
+	 * <p>Campos usados (nessa ordem, separados por {@code |}): </p>
+	 * <pre>
+	 *   White | Black | Event | Site | Date | Round | Result | initialFen
+	 * </pre>
+	 *
+	 * <p>Tags ausentes são substituídas por {@code "?"} para manter o hash
+	 * estável independentemente de como o PGN foi exportado.</p>
+	 */
+	public String getGameId() {
+		String raw = String.join("|",
+				nvl(tags.get("White")),
+				nvl(tags.get("Black")),
+				nvl(tags.get("Event")),
+				nvl(tags.get("Site")),
+				nvl(tags.get("Date")),
+				nvl(tags.get("Round")),
+				nvl(tags.get("Result")),
+				nvl(initialFen)
+		);
+		try {
+			byte[] digest = MessageDigest.getInstance("SHA-256")
+					.digest(raw.getBytes(StandardCharsets.UTF_8));
+			return HexFormat.of().formatHex(digest);
+		} catch (NoSuchAlgorithmException e) {
+			// SHA-256 é garantido pela JVM — nunca ocorre na prática
+			throw new IllegalStateException("SHA-256 não disponível", e);
+		}
+	}
+
 	// ── Summary DTO (sem os lances, usado na listagem) ──────────────────────
-	//
-	// Além do Seven-Tag Roster original, expõe os campos extras comuns do
-	// Lichess/FIDE para que o frontend possa exibir ELOs, diff de rating,
-	// abertura, controle de tempo, etc. sem precisar de uma segunda requisição.
-	// O mapa completo de tags também é incluído para uso genérico.
-	//
 	public record Summary(int index, String title, int totalMoves, boolean analyzed,
 			// Seven-Tag Roster
 			String result, String white, String black, String date, String event,
@@ -88,5 +120,10 @@ public class GameData {
 	private String tagOrNull(String key) {
 		String v = tags.get(key);
 		return (v == null || v.isBlank() || "?".equals(v)) ? null : v;
+	}
+
+	/** Normaliza tag ausente/branco/"?" para "?" (usado no hash). */
+	private static String nvl(String v) {
+		return (v == null || v.isBlank() || "?".equals(v)) ? "?" : v;
 	}
 }
