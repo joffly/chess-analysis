@@ -93,6 +93,38 @@ public class StockfishPoolService implements AutoCloseable {
             return result;
         }
 
+        /**
+         * Analisa a posição resultante após aplicar um lance UCI ao FEN informado.
+         * Usa o comando UCI: {@code position fen <fen> moves <uciMove>}
+         *
+         * @param fen     FEN da posição base
+         * @param uciMove lance UCI a ser aplicado (ex: "e2e4")
+         * @param depth   profundidade de análise
+         * @return resultado da análise da posição após o lance
+         */
+        public synchronized StockfishResult analyzeWithMove(String fen, String uciMove, int depth) throws IOException {
+            ensureReady();
+            send("position fen " + fen + " moves " + uciMove);
+            send("go depth " + depth);
+            // O FEN para normalização de perspectiva é derivado do turno original invertido
+            String fenAfterMove = deriveFenSideToMove(fen);
+            StockfishResult result = collectResult(fenAfterMove);
+            log.trace("Stockfish #{} analisou FEN={} moves={} → {}", id, fen, uciMove, result);
+            return result;
+        }
+
+        /**
+         * Deriva um FEN mínimo com o lado a mover invertido, usado apenas para
+         * normalizar a perspectiva da avaliação retornada pelo Stockfish.
+         */
+        private String deriveFenSideToMove(String fen) {
+            String[] parts = fen.split("\\s+");
+            if (parts.length < 2) return fen;
+            String newSide = parts[1].equals("w") ? "b" : "w";
+            parts[1] = newSide;
+            return String.join(" ", parts);
+        }
+
         public synchronized void stop() {
             if (ready) {
                 try {
@@ -266,6 +298,35 @@ public class StockfishPoolService implements AutoCloseable {
         } finally {
             instance.setBusy(false);
             available.offer(instance); // Devolve à fila
+        }
+    }
+
+    /**
+     * Analisa a posição resultante após aplicar {@code uciMove} ao {@code fen} informado.
+     * Equivale a enviar ao Stockfish: {@code position fen <fen> moves <uciMove>}.
+     *
+     * <p>Útil para avaliar a qualidade de um lance específico sem precisar calcular
+     * o FEN resultante externamente.</p>
+     *
+     * @param fen     FEN da posição base
+     * @param uciMove lance UCI a aplicar (ex: "e2e4")
+     * @param depth   profundidade de análise
+     * @return resultado da análise após o lance
+     * @throws InterruptedException se a thread for interrompida enquanto aguarda instância
+     * @throws IOException          se ocorrer erro na comunicação com Stockfish
+     */
+    public StockfishResult analyzeWithMove(String fen, String uciMove, int depth)
+            throws InterruptedException, IOException {
+        if (!started)
+            throw new IOException("Pool não está inicializado. Configure o caminho primeiro.");
+
+        StockfishInstance instance = available.take();
+        try {
+            instance.setBusy(true);
+            return instance.analyzeWithMove(fen, uciMove, depth);
+        } finally {
+            instance.setBusy(false);
+            available.offer(instance);
         }
     }
 
