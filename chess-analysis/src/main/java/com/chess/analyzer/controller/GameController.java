@@ -30,6 +30,8 @@ import com.chess.analyzer.model.MoveRequest;
 import com.chess.analyzer.model.MoveResponse;
 import com.chess.analyzer.service.BoardService;
 import com.chess.analyzer.service.GameAnalysisService;
+import com.chess.analyzer.service.PartidaSaveService;
+import com.chess.analyzer.service.PartidaSaveService.SaveResult;
 import com.chess.analyzer.service.PgnService;
 import com.chess.analyzer.service.StockfishPoolService;
 
@@ -53,6 +55,8 @@ import com.chess.analyzer.service.StockfishPoolService;
  * /api/analysis/stop → cancela análise GET /api/analysis/events → SSE stream de
  * progresso
  *
+ * POST /api/games/save → salva partidas analisadas no banco (upsert)
+ *
  * GET /api/export/pgn → download PGN anotado
  */
 @Controller
@@ -65,14 +69,17 @@ public class GameController {
 	private final GameAnalysisService analysisService;
 	private final BoardService boardService;
 	private final AppProperties appProperties;
+	private final PartidaSaveService partidaSaveService;
 
 	public GameController(StockfishPoolService stockfishPool, PgnService pgnService,
-			GameAnalysisService analysisService, BoardService boardService, AppProperties appProperties) {
+			GameAnalysisService analysisService, BoardService boardService,
+			AppProperties appProperties, PartidaSaveService partidaSaveService) {
 		this.stockfishPool = stockfishPool;
 		this.pgnService = pgnService;
 		this.analysisService = analysisService;
 		this.boardService = boardService;
 		this.appProperties = appProperties;
+		this.partidaSaveService = partidaSaveService;
 	}
 
 	// ── UI ───────────────────────────────────────────────────────
@@ -184,19 +191,12 @@ public class GameController {
 
 	// ── Board interaction ────────────────────────────────────────
 
-	/**
-	 * Retorna os destinos legais para a peça em {@code from} na posição
-	 * {@code fen}. Query params: fen, from
-	 */
 	@GetMapping("/api/board/legal-moves")
 	@ResponseBody
 	public LegalMovesResponse legalMoves(@RequestParam String fen, @RequestParam String from) {
 		return boardService.legalMoves(fen, from);
 	}
 
-	/**
-	 * Executa um lance no tabuleiro livre (modo exploração).
-	 */
 	@PostMapping("/api/board/move")
 	@ResponseBody
 	public MoveResponse applyMove(@RequestBody MoveRequest req) {
@@ -224,11 +224,52 @@ public class GameController {
 		return Map.of("ok", true);
 	}
 
-	/** SSE stream de progresso da análise. */
 	@GetMapping(value = "/api/analysis/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	@ResponseBody
 	public SseEmitter analysisEvents() {
 		return analysisService.createEmitter();
+	}
+
+	// ── Persistência ──────────────────────────────────────────────
+
+	/**
+	 * POST /api/games/save
+	 * Salva no banco todas as partidas analisadas (ou todas, se onlyAnalyzed=false).
+	 * Aplica upsert: insere novas, atualiza existentes com as avaliações mais recentes.
+	 *
+	 * Query params:
+	 *   onlyAnalyzed (boolean, default=true) — filtra apenas partidas com análise completa
+	 */
+	@PostMapping("/api/games/save")
+	@ResponseBody
+	public ResponseEntity<?> saveAnalyzedGames(
+			@RequestParam(defaultValue = "true") boolean onlyAnalyzed) {
+
+		List<GameData> games = analysisService.getGames();
+		if (games.isEmpty()) {
+			return ResponseEntity.badRequest()
+					.body(Map.of("ok", false, "message", "Nenhuma partida carregada."));
+		}
+
+		List<SaveResult> results = partidaSaveService.salvarPartidasAnalisadas(games, onlyAnalyzed);
+
+		long criadas     = results.stream().filter(r -> r.status().equals("CRIADA")).count();
+		long atualizadas = results.stream().filter(r -> r.status().equals("ATUALIZADA")).count();
+		long ignoradas   = results.stream().filter(r -> r.status().startsWith("IGNORADA")).count();
+
+		return ResponseEntity.ok(Map.of(
+				"ok",          true,
+				"criadas",     criadas,
+				"atualizadas", atualizadas,
+				"ignoradas",   ignoradas,
+				"total",       results.size(),
+				"detalhes",    results.stream()
+									 .map(r -> Map.of(
+											 "index",  r.index(),
+											 "title",  r.title(),
+											 "status", r.status()))
+									 .toList()
+		));
 	}
 
 	// ── Export ───────────────────────────────────────────────────

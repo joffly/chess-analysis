@@ -135,6 +135,17 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
 .btn-d{background:var(--red);color:#fff;font-weight:700;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px}
 .btn-g{background:var(--green);color:#000;font-weight:700;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px}
 .btn-s{background:var(--card);color:var(--text);font-weight:600;border:1px solid var(--border);border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px}
+.btn-save{background:#6e40c9;color:#fff;font-weight:700;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:13px;transition:opacity .12s}
+.btn-save:hover:not(:disabled){opacity:.85}
+.btn-save:disabled{opacity:.4;cursor:default}
+
+/* ── Save toast ─────────────────────────────────────────── */
+#save-toast{
+  display:none;margin-top:6px;padding:6px 10px;border-radius:6px;
+  font-size:12px;font-weight:600;line-height:1.4
+}
+#save-toast.toast-success{background:#1a3a1a;color:var(--green);border:1px solid var(--green)}
+#save-toast.toast-error  {background:#3a1a1a;color:var(--red);  border:1px solid var(--red)}
 
 /* ── Promotion modal ────────────────────────────────────── */
 #promo-modal{
@@ -255,11 +266,15 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
     <button class="btn-d" style="margin-top:6px;width:100%;padding:4px" onclick="stopAnalysis()">Parar</button>
   </div>
 
-  <!-- Export -->
-  <div class="ps" style="padding:8px 14px">
+  <!-- Export + Salvar -->
+  <div class="ps" style="padding:8px 14px;display:flex;flex-direction:column;gap:6px">
     <button class="btn-g" style="width:100%" onclick="exportPgn()">
       <i class="bi bi-download"></i> Exportar PGN Anotado
     </button>
+    <button class="btn-save" id="btn-save-games" style="width:100%" onclick="saveAnalyzedGames()">
+      <i class="bi bi-floppy"></i> Salvar Partidas Analisadas
+    </button>
+    <div id="save-toast"></div>
   </div>
 
   <!-- Lista de partidas -->
@@ -402,7 +417,6 @@ function setMode(m) {
   document.getElementById('free-log').style.display  = m === 'free' ? '' : 'none';
 
   if (m === 'free') {
-    // Start free play from current navigation position
     freeFen   = positions[currentPly] || (currentGame?.initialFen ?? START_FEN);
     freeMoves = [];
     pendingFrom = null;
@@ -433,27 +447,20 @@ function resetFreePlay() {
 //  Board Event Handlers (drag & drop + click)
 // ════════════════════════════════════════════════════════════
 
-// ── Drag Start ───────────────────────────────────────────────
 async function onDragStart(source, piece) {
-  if (mode === 'nav') return false; // no drag in nav mode
-
-  // Only allow moving the side to move
+  if (mode === 'nav') return false;
   const toMove = fenSideToMove(freeFen);
   if (toMove === 'w' && piece.startsWith('b')) return false;
   if (toMove === 'b' && piece.startsWith('w')) return false;
-
-  // Show legal targets
   pendingFrom = source;
   await showLegalMoves(source);
   return true;
 }
 
-// ── Drop ─────────────────────────────────────────────────────
 async function onDrop(source, target) {
   if (mode === 'nav') return 'snapback';
   if (source === target) { clearHL(); pendingFrom = null; return 'snapback'; }
 
-  // Check if promotion needed
   let promotion = null;
   if (isPromotionMove(freeFen, source, target)) {
     try {
@@ -474,36 +481,31 @@ async function onDrop(source, target) {
   freeMoves.push({ uci: res.uci, san: res.san });
   renderFreeMoves();
   pendingFrom = null;
-  // highlight last move squares
   clearHL();
   $(`#board .square-${source}`).addClass('hl-last');
   $(`#board .square-${target}`).addClass('hl-last');
 
-  if (res.checkmate)  setStatus(`Xeque-mate! ${res.san}`, 'ok');
-  else if (res.check) setStatus(`Xeque! ${res.san}`, 'inf');
-  else if (res.stalemate) setStatus('Afogamento! Empate.', 'inf');
-  else if (res.gameOver)  setStatus('Fim de jogo.', 'inf');
-  else                    setStatus(`Lance: ${res.san}`, 'ok');
+  if (res.checkmate)       setStatus(`Xeque-mate! ${res.san}`, 'ok');
+  else if (res.check)      setStatus(`Xeque! ${res.san}`, 'inf');
+  else if (res.stalemate)  setStatus('Afogamento! Empate.', 'inf');
+  else if (res.gameOver)   setStatus('Fim de jogo.', 'inf');
+  else                     setStatus(`Lance: ${res.san}`, 'ok');
 }
 
 function onSnapEnd() {
   if (mode === 'free') board.position(freeFen, false);
 }
 
-// ── Click (alternative to drag) ──────────────────────────────
 async function onSquareClick(square, piece) {
-  if (mode === 'nav') return; // nav mode uses navigation buttons / move table
+  if (mode === 'nav') return;
 
   const toMove = fenSideToMove(freeFen);
 
-  // If a piece is already selected:
   if (pendingFrom !== null) {
     if (pendingFrom === square) {
-      // Deselect
       clearHL(); pendingFrom = null;
       return;
     }
-    // If clicking own piece — reselect
     if (piece && ((toMove === 'w' && piece.startsWith('w')) ||
                   (toMove === 'b' && piece.startsWith('b')))) {
       clearHL();
@@ -512,7 +514,6 @@ async function onSquareClick(square, piece) {
       return;
     }
 
-    // Try the move
     const isTarget = legalTargets.includes(square);
     if (!isTarget) { clearHL(); pendingFrom = null; return; }
 
@@ -544,7 +545,6 @@ async function onSquareClick(square, piece) {
     return;
   }
 
-  // No piece selected yet — select if own piece
   if (!piece) return;
   if ((toMove === 'w' && piece.startsWith('w')) ||
       (toMove === 'b' && piece.startsWith('b'))) {
@@ -555,7 +555,6 @@ async function onSquareClick(square, piece) {
   }
 }
 
-// ── Hover (nav mode: show last move; free mode: hover piece) ──
 function onMouseover(square, piece) {
   if (mode !== 'free' || !piece) return;
   const toMove = fenSideToMove(freeFen);
@@ -566,12 +565,12 @@ function onMouseover(square, piece) {
 }
 
 function onMouseout(square) {
-  if (pendingFrom === square) return; // keep highlight for selected
+  if (pendingFrom === square) return;
   $(`#board .square-${square}`).removeClass('hl-from');
 }
 
 // ════════════════════════════════════════════════════════════
-//  Legal Moves (server-side via chesslib)
+//  Legal Moves
 // ════════════════════════════════════════════════════════════
 async function showLegalMoves(from) {
   clearHL();
@@ -630,7 +629,7 @@ function askPromotion(sideToMove) {
       container.appendChild(div);
     });
     document.getElementById('promo-modal').classList.add('show');
-    pendingPromo = reject; // cancel if modal closed elsewhere
+    pendingPromo = reject;
   });
 }
 
@@ -641,7 +640,6 @@ function askPromotion(sideToMove) {
 function fenSideToMove(fen) { return fen.split(' ')[1] || 'w'; }
 
 function isPromotionMove(fen, from, to) {
-  // Quick heuristic: pawn reaching rank 8 (white) or rank 1 (black)
   const side = fenSideToMove(fen);
   if (side === 'w' && from[1] === '7' && to[1] === '8') return true;
   if (side === 'b' && from[1] === '2' && to[1] === '1') return true;
@@ -691,7 +689,7 @@ async function configureSF() {
 }
 
 // ════════════════════════════════════════════════════════════
-//  PGN Load  (arquivo ou texto colado)
+//  PGN Load
 // ════════════════════════════════════════════════════════════
 
 function togglePasteArea() {
@@ -731,7 +729,6 @@ async function loadPgnText() {
   const blob = new Blob([text], { type: 'application/x-chess-pgn' });
   const form = new FormData(); form.append('file', blob, 'paste.pgn');
   await _submitPgnForm(form, 'PGN colado');
-  // Fecha a área de cole após sucesso
   document.getElementById('pgn-text').value = '';
   document.getElementById('paste-area').style.display = 'none';
   document.getElementById('paste-toggle').classList.remove('active');
@@ -802,23 +799,18 @@ async function loadGame(index) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  Position Array Construction (pure JS using chessboard.js positions)
-//  We only store FENs from server data — no chess.js needed client-side
+//  Position Array Construction
 // ════════════════════════════════════════════════════════════
 function buildPositions(gameData) {
   positions = [gameData.initialFen];
   sanList   = [];
 
-  // chess.js é usado apenas para converter UCI → SAN quando o backend
-  // não popula o campo `san`. O estado é avançado lance a lance a partir
-  // do FEN inicial da partida (suporta posições não-padrão via FEN).
   const chess = new Chess(gameData.initialFen || START_FEN);
 
   (gameData.moves || []).forEach(m => {
     positions.push(m.fenAfter);
 
     if (!m.san && m.uci) {
-      // Converte UCI (ex: "e2e4", "g1f3", "e7e8q") → SAN (ex: "e4", "Nf3", "e8=Q")
       const from  = m.uci.substring(0, 2);
       const to    = m.uci.substring(2, 4);
       const promo = m.uci.length === 5 ? m.uci[4] : undefined;
@@ -826,11 +818,9 @@ function buildPositions(gameData) {
       if (result) {
         m.san = result.san;
       } else {
-        // Fallback: recarrega FEN para manter o estado sincronizado
         chess.load(m.fenAfter);
       }
     } else if (m.san) {
-      // san já vem do backend: apenas avança o estado do chess.js
       try { chess.move(m.san); }
       catch { chess.load(m.fenAfter); }
     }
@@ -883,7 +873,7 @@ function setEvalCell(td, m) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  Navigation (nav mode)
+//  Navigation
 // ════════════════════════════════════════════════════════════
 function goFirst() { goToPly(0); }
 function goLast()  { goToPly(positions.length - 1); }
@@ -900,10 +890,8 @@ function goToPly(ply) {
     highlightLastMove();
   }
 
-  // Update eval bar
   updateEvalBar(ply);
 
-  // Move list: highlight active row
   document.querySelectorAll('#mtable tr').forEach(r => r.classList.remove('am'));
   if (ply > 0 && currentGame) {
     const m   = currentGame.moves[ply - 1];
@@ -912,7 +900,6 @@ function goToPly(ply) {
     if (row) { row.classList.add('am'); row.scrollIntoView({ block: 'nearest' }); }
   }
 
-  // Analysis panel
   if (ply > 0) showAnalysisForPly(ply - 1);
   else { document.getElementById('bm-line').textContent = '—'; document.getElementById('pv-line').textContent = '—'; }
 
@@ -938,10 +925,7 @@ function showAnalysisForPly(mi) {
       ? (m.mateIn > 0 ? '+M' : '-M') + Math.abs(m.mateIn)
       : (m.eval >= 0 ? '+' : '') + (m.eval || 0).toFixed(2);
 
-  // O Stockfish analisa a posição ANTES do lance mi ser jogado: positions[mi].
-  // positions[mi+1] seria após o lance (cor invertida) — errado para o PV.
   const posFen = positions[mi];
-
   const bmSan = m.bestMove ? uciListToSanFigurines(posFen, [m.bestMove])[0] : '—';
   document.getElementById('bm-line').textContent =
       `Eval: ${ev}  |  Melhor: ${bmSan}`;
@@ -950,31 +934,22 @@ function showAnalysisForPly(mi) {
       pvSans.length ? 'PV: ' + pvSans.join(' ') : '';
 }
 
-/**
- * Converte uma sequência de lances UCI para SAN figurinado,
- * encadeando as jogadas a partir do FEN dado.
- * Ex: ['h2h4','c7c5','h4h5'] → ['h4','♗c5','h5']
- *
- * Usa chess.load() (retorna false se FEN inválido) em vez do construtor,
- * que pode silenciosamente voltar à posição inicial em FENs não-padrão.
- */
 function uciListToSanFigurines(fen, uciMoves) {
   if (!fen || !uciMoves?.length) return uciMoves || [];
   try {
     const chess = new Chess();
-    if (!chess.load(fen)) return uciMoves; // FEN inválido — devolve UCI
+    if (!chess.load(fen)) return uciMoves;
     return uciMoves.map(uci => {
       const from      = uci.substring(0, 2);
       const to        = uci.substring(2, 4);
       const promotion = uci.length === 5 ? uci[4] : undefined;
       const move      = chess.move({ from, to, promotion });
-      return move ? toFigurine(move.san) : uci; // fallback para UCI se ilegal
+      return move ? toFigurine(move.san) : uci;
     });
   } catch (e) {
-    return uciMoves; // fallback seguro
+    return uciMoves;
   }
 }
-
 
 // ════════════════════════════════════════════════════════════
 //  Eval Bar
@@ -1088,6 +1063,46 @@ function patchMoveAnalysis(d) {
 }
 
 // ════════════════════════════════════════════════════════════
+//  Save Analyzed Games
+// ════════════════════════════════════════════════════════════
+async function saveAnalyzedGames() {
+  const btn   = document.getElementById('btn-save-games');
+  const toast = document.getElementById('save-toast');
+
+  btn.disabled    = true;
+  btn.innerHTML   = '<i class="bi bi-hourglass-split"></i> Salvando...';
+  toast.style.display = 'none';
+
+  try {
+    const res  = await fetch('/api/games/save?onlyAnalyzed=true', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.ok) {
+      toast.className   = 'toast-success';
+      toast.id          = 'save-toast';
+      toast.textContent =
+          `✅ ${data.criadas} criada(s) · ${data.atualizadas} atualizada(s) · ${data.ignoradas} ignorada(s)`;
+      setStatus(`Partidas salvas: ${data.criadas} novas, ${data.atualizadas} atualizadas.`, 'ok');
+    } else {
+      toast.className   = 'toast-error';
+      toast.id          = 'save-toast';
+      toast.textContent = `❌ ${data.message}`;
+      setStatus(data.message, 'err');
+    }
+  } catch (e) {
+    toast.className   = 'toast-error';
+    toast.id          = 'save-toast';
+    toast.textContent = '❌ Erro de comunicação com o servidor.';
+    setStatus('Erro ao salvar partidas.', 'err');
+  } finally {
+    btn.disabled  = false;
+    btn.innerHTML = '<i class="bi bi-floppy"></i> Salvar Partidas Analisadas';
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 6000);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 //  Free Play: Move Log
 // ════════════════════════════════════════════════════════════
 function renderFreeMoves() {
@@ -1122,15 +1137,10 @@ function checkAnalyzeBtn() {
 }
 
 // ════════════════════════════════════════════════════════════
-//  Figurine Notation  (SAN com símbolos Unicode de peças)
+//  Figurine Notation
 // ════════════════════════════════════════════════════════════
 const FIGURINE = { K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘' };
 
-/**
- * Converte a letra inicial de peça de um lance SAN para o símbolo Unicode.
- * Ex: "Nf3" → "♘f3"  |  "Qxd5+" → "♕xd5+"  |  "e4", "O-O" → sem alteração.
- * Letras de coluna (a-h) e notação de roque (O-O) não são afetadas.
- */
 function toFigurine(san) {
   if (!san) return san;
   return san.replace(/^([KQRBN])/, c => FIGURINE[c] ?? c);
@@ -1170,26 +1180,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     document.getElementById('sf-depth').value = d.depth || 15;
   });
-});
 
-// Inicialização das configurações do Stockfish
-document.addEventListener('DOMContentLoaded', () => {
-  initBoard();
-  
-  // Carrega configuração do Stockfish do backend
   fetch('/api/stockfish/parametro')
     .then(r => r.json())
     .then(d => {
-      if (d.path) {
-        document.getElementById('sf-path').value = d.path;
-      }
-      if (d.depth) {
-        document.getElementById('sf-depth').value = d.depth;
-      }
+      if (d.path)  document.getElementById('sf-path').value  = d.path;
+      if (d.depth) document.getElementById('sf-depth').value = d.depth;
     })
     .catch(e => console.error('Erro ao carregar config:', e));
-  
-  checkAnalyzeBtn();
 });
 </script>
 </body>

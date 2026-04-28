@@ -1,0 +1,147 @@
+package com.chess.analyzer.service;
+
+import com.chess.analyzer.entity.LanceEntity;
+import com.chess.analyzer.entity.PartidaEntity;
+import com.chess.analyzer.model.GameData;
+import com.chess.analyzer.model.MoveEntry;
+import com.chess.analyzer.repository.LanceRepository;
+import com.chess.analyzer.repository.PartidaRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+@Service
+public class PartidaSaveService {
+
+    private static final Logger log = LoggerFactory.getLogger(PartidaSaveService.class);
+
+    private final PartidaRepository partidaRepository;
+    private final LanceRepository lanceRepository;
+
+    public PartidaSaveService(PartidaRepository partidaRepository,
+                               LanceRepository lanceRepository) {
+        this.partidaRepository = partidaRepository;
+        this.lanceRepository   = lanceRepository;
+    }
+
+    /**
+     * Resultado do processamento de uma partida individual.
+     */
+    public record SaveResult(int index, String title, String status) {
+        public static SaveResult criada(int idx, String title) {
+            return new SaveResult(idx, title, "CRIADA");
+        }
+        public static SaveResult atualizada(int idx, String title) {
+            return new SaveResult(idx, title, "ATUALIZADA");
+        }
+        public static SaveResult ignorada(int idx, String title, String motivo) {
+            return new SaveResult(idx, title, "IGNORADA: " + motivo);
+        }
+    }
+
+    /**
+     * Salva uma lista de partidas analisadas, aplicando upsert com checagem dupla:
+     * 1. Pela chave (fontePgn + pgnIndex) — reimportação do mesmo arquivo.
+     * 2. Pelo conteúdo (white + black + event + round + result) — duplicata cross-arquivo.
+     *
+     * @param games        lista de GameData com análise
+     * @param onlyAnalyzed se true, ignora partidas sem análise completa
+     * @return lista de resultados por partida
+     */
+    @Transactional
+    public List<SaveResult> salvarPartidasAnalisadas(List<GameData> games, boolean onlyAnalyzed) {
+        List<SaveResult> results = new ArrayList<>();
+
+        for (GameData game : games) {
+            if (onlyAnalyzed && !game.isFullyAnalyzed()) {
+                results.add(SaveResult.ignorada(game.getIndex(), game.getTitle(),
+                        "partida não está completamente analisada"));
+                continue;
+            }
+
+            try {
+                SaveResult r = upsertPartida(game);
+                results.add(r);
+                log.info("Partida [{}] '{}' → {}", game.getIndex(), game.getTitle(), r.status());
+            } catch (Exception e) {
+                log.error("Erro ao salvar partida [{}]: {}", game.getIndex(), e.getMessage(), e);
+                results.add(SaveResult.ignorada(game.getIndex(), game.getTitle(),
+                        "erro: " + e.getMessage()));
+            }
+        }
+
+        return results;
+    }
+
+    // ── Upsert ──────────────────────────────────────────────────────────
+
+    private SaveResult upsertPartida(GameData game) {
+        Map<String, String> tags = game.getTags();
+        String fontePgn = tags.getOrDefault("__fonte_pgn__", "unknown");
+        int    pgnIndex = game.getIndex();
+
+        // 1ª verificação: chave estrutural (mesmo arquivo + mesmo índice)
+        Optional<PartidaEntity> existente =
+                partidaRepository.findByFontePgnAndPgnIndex(fontePgn, pgnIndex);
+
+        // 2ª verificação: conteúdo da partida (cross-arquivo)
+        if (existente.isEmpty()) {
+            existente = partidaRepository.findByGameIdentity(
+                    tags.get("White"),
+                    tags.get("Black"),
+                    tags.get("Event"),
+                    tags.get("Round"),
+                    tags.get("Result")
+            );
+        }
+
+        if (existente.isPresent()) {
+            // UPDATE: apaga lances antigos e regrava com avaliações novas
+            PartidaEntity entidade = existente.get();
+            lanceRepository.deleteByPartidaId(entidade.getId());
+            lanceRepository.flush();
+            adicionarLances(entidade, game);
+            partidaRepository.save(entidade);
+            return SaveResult.atualizada(pgnIndex, game.getTitle());
+        } else {
+            // INSERT: cria entidade nova
+            PartidaEntity entidade = new PartidaEntity(pgnIndex, fontePgn, tags,
+                    game.getInitialFen());
+            adicionarLances(entidade, game);
+            partidaRepository.save(entidade);
+            return SaveResult.criada(pgnIndex, game.getTitle());
+        }
+    }
+
+    private void adicionarLances(PartidaEntity entidade, GameData game) {
+        List<MoveEntry> moves = game.getMoves();
+        for (int i = 0; i < moves.size(); i++) {
+            MoveEntry m = moves.get(i);
+            LanceEntity lance = new LanceEntity(
+                    i + 1,
+                    m.getMoveNumber(),
+                    m.isWhiteTurn(),
+                    m.getUci(),
+                    m.getSan(),
+                    m.getFenBefore(),
+                    m.getFenAfter()
+            );
+            if (m.isAnalyzed()) {
+                lance.registrarAnalise(
+                        m.getEval(),
+                        m.getMateIn(),
+                        m.getBestMove(),
+                        m.getPv(),
+                        false
+                );
+            }
+            entidade.addLance(lance);
+        }
+    }
+}

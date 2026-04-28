@@ -6,33 +6,34 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.util.List;
 import java.util.Optional;
 
-/**
- * Repositório JPA para {@link PartidaEntity}.
- * O Spring Data gera a implementação em tempo de execução.
- */
 @Repository
 public interface PartidaRepository extends JpaRepository<PartidaEntity, Long> {
 
-    /** Busca partidas por jogador das brancas (case-insensitive). */
-    List<PartidaEntity> findByWhiteIgnoreCase(String white);
+    /**
+     * Detecta duplicidade pela combinação de arquivo PGN + índice da partida.
+     * Identifica reimportações do mesmo arquivo.
+     */
+    Optional<PartidaEntity> findByFontePgnAndPgnIndex(String fontePgn, int pgnIndex);
 
-    /** Busca partidas por jogador das pretas (case-insensitive). */
-    List<PartidaEntity> findByBlackIgnoreCase(String black);
-
-    /** Busca partidas em que um jogador participou (brancas ou pretas). */
-    @Query("SELECT p FROM PartidaEntity p WHERE "
-         + "LOWER(p.white) = LOWER(:player) OR LOWER(p.black) = LOWER(:player)")
-    List<PartidaEntity> findByPlayer(@Param("player") String player);
-
-    /** Verifica se uma partida com o mesmo índice PGN já foi importada. */
-    boolean existsByPgnIndex(int pgnIndex);
-
-    /** Lista partidas por resultado. */
-    List<PartidaEntity> findByResult(String result);
-
-    /** Busca partidas por abertura (match parcial, case-insensitive). */
-    List<PartidaEntity> findByOpeningContainingIgnoreCase(String opening);
+    /**
+     * Detecta duplicidade pelo conteúdo: mesmos jogadores, data, evento e round.
+     * Identifica partidas idênticas provenientes de arquivos PGN diferentes.
+     */
+    @Query("""
+        SELECT p FROM PartidaEntity p
+        WHERE p.white  = :white
+          AND p.black  = :black
+          AND p.event  = :event
+          AND p.round  = :round
+          AND p.result = :result
+        """)
+    Optional<PartidaEntity> findByGameIdentity(
+        @Param("white")  String white,
+        @Param("black")  String black,
+        @Param("event")  String event,
+        @Param("round")  String round,
+        @Param("result") String result
+    );
 }
