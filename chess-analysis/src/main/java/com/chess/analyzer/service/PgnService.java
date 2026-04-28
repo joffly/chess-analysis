@@ -50,8 +50,12 @@ public class PgnService {
 	private static final String START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 	/** Captura o valor da tag [FEN "..."] (case-insensitive). */
-	private static final Pattern TAG_FEN_PATTERN = Pattern.compile("\\[FEN\\s+\"([^\"]+)\"\\]",
-			Pattern.CASE_INSENSITIVE);
+	private static final Pattern TAG_FEN_PATTERN = Pattern.compile(
+			"\\[FEN\\s+\"([^\"]+)\"\\]", Pattern.CASE_INSENSITIVE);
+
+	/** Captura qualquer tag PGN genérica: [TagName "Value"]. */
+	private static final Pattern TAG_GENERIC_PATTERN = Pattern.compile(
+			"\\[([A-Za-z][A-Za-z0-9_]*)\\s+\"([^\"]*)\"");
 
 	// ── Carregamento ─────────────────────────────────────────────
 
@@ -76,19 +80,15 @@ public class PgnService {
 			return List.of();
 		}
 
-		/*
-		 * Extrai os FENs diretamente do texto bruto, indexados por posição de partida.
-		 * O chesslib 1.3.6 NÃO preserva a tag FEN em game.getProperty(), por isso não
-		 * confiamos nele para isso.
-		 */
-		List<String> rawFens = extractFensFromRawPgn(pgnContent);
-		log.debug("FENs extraídos do PGN: {}", rawFens);
+		// Extrai todos os blocos brutos (tags + movetext) por índice de partida.
+		List<String> rawBlocks = splitRawBlocks(pgnContent);
+		log.debug("Blocos PGN extraídos: {}", rawBlocks.size());
 
 		List<GameData> result = new ArrayList<>(games.size());
 		for (int i = 0; i < games.size(); i++) {
 			try {
-				String rawFen = (i < rawFens.size()) ? rawFens.get(i) : null;
-				result.add(convertGame(i, games.get(i), pgn, rawFen));
+				String block = (i < rawBlocks.size()) ? rawBlocks.get(i) : "";
+				result.add(convertGame(i, games.get(i), pgn, block));
 			} catch (Exception ex) {
 				log.error("Falha ao parsear partida {}: {}", i, ex.getMessage(), ex);
 			}
@@ -98,32 +98,32 @@ public class PgnService {
 	}
 
 	/**
-	 * Extrai a tag {@code [FEN "..."]} de cada partida no PGN bruto.
-	 *
-	 * <p>
-	 * Divide o conteúdo em blocos de partida usando {@code [Event} como delimitador
-	 * (lookahead, não consome o token). Para cada bloco, tenta encontrar a tag FEN.
-	 * Retorna {@code null} para partidas sem ela.
-	 * </p>
+	 * Divide o PGN bruto em blocos individuais de partida usando [Event como
+	 * delimitador (lookahead — não descarta o token).
 	 */
-	private List<String> extractFensFromRawPgn(String pgnContent) {
-		List<String> fens = new ArrayList<>();
-
-		/*
-		 * Divide em blocos independentes de partida. O lookahead (?=\[Event) garante
-		 * que a tag [Event] não seja descartada. Funciona mesmo quando o arquivo começa
-		 * diretamente com [Event].
-		 */
-		String[] blocks = pgnContent.split("(?=\\[Event\\s)");
-		for (String block : blocks) {
-			if (block.isBlank())
-				continue;
-			Matcher m = TAG_FEN_PATTERN.matcher(block);
-			String fen = m.find() ? m.group(1).trim() : null;
-			fens.add(fen);
-			log.debug("Bloco PGN: FEN extraído = '{}'", fen);
+	private List<String> splitRawBlocks(String pgnContent) {
+		List<String> blocks = new ArrayList<>();
+		for (String b : pgnContent.split("(?=\\[Event\\s)")) {
+			if (!b.isBlank())
+				blocks.add(b);
 		}
-		return fens;
+		return blocks;
+	}
+
+	/**
+	 * Lê todas as tags PGN de um bloco bruto via regex.
+	 * Retorna mapa case-preservado (chave original do PGN).
+	 */
+	private Map<String, String> extractRawTags(String block) {
+		Map<String, String> map = new LinkedHashMap<>();
+		Matcher m = TAG_GENERIC_PATTERN.matcher(block);
+		while (m.find()) {
+			String key = m.group(1);
+			String val = m.group(2).trim();
+			if (!val.isEmpty())
+				map.put(key, val);
+		}
+		return map;
 	}
 
 	// ── Conversão de partida ─────────────────────────────────────
@@ -131,80 +131,101 @@ public class PgnService {
 	/**
 	 * Converte um {@link Game} do chesslib em {@link GameData}.
 	 *
-	 * @param rawFenFromPgn FEN extraído do texto bruto (pode ser null para posição
-	 *                      padrão)
+	 * @param rawBlock bloco PGN bruto correspondente a esta partida
 	 */
-	private GameData convertGame(int index, Game game, PgnHolder pgn, String rawFenFromPgn) throws Exception {
+	private GameData convertGame(int index, Game game, PgnHolder pgn, String rawBlock) throws Exception {
 
 		/*
 		 * CRÍTICO: capturar o texto de lances ANTES de loadMoveText(). Após
-		 * loadMoveText(), o chesslib pode zerar/consumir o moveText interno. O texto
-		 * raw é usado como fonte para re-parsear os lances com o FEN correto.
+		 * loadMoveText(), o chesslib pode zerar/consumir o moveText interno.
 		 */
 		String rawMoveText = (game.getMoveText() != null) ? game.getMoveText().toString().trim() : null;
 
 		game.loadMoveText();
 
-		// ── Tags ──────────────────────────────────────────────────
+		// ── Extrai TODAS as tags do bloco bruto (fonte mais confiável) ────
+		Map<String, String> rawTags = extractRawTags(rawBlock);
+		log.debug("Partida {}: tags brutas extraídas = {}", index, rawTags.keySet());
+
+		// ── Monta mapa de tags final ──────────────────────────────────────
 		Map<String, String> tags = new LinkedHashMap<>();
 
+		// Seven-Tag Roster — tenta chesslib primeiro, fallback para rawTags
 		String evtName = extractPgnHolderValue(pgn.getEvent());
-		String siteName = getPropertyValue(game, "Site");
-		String round = getPropertyValue(game, "Round");
-		String white = game.getWhitePlayer() != null ? game.getWhitePlayer().getName() : null;
-		String black = game.getBlackPlayer() != null ? game.getBlackPlayer().getName() : null;
-		String result = game.getResult() != null ? game.getResult().getDescription() : null;
+		String siteName = coalesce(
+				getPropertyValue(game, "Site"),
+				rawTags.get("Site"));
+		String round = coalesce(
+				getPropertyValue(game, "Round"),
+				rawTags.get("Round"));
+		String white = game.getWhitePlayer() != null ? game.getWhitePlayer().getName() : rawTags.get("White");
+		String black = game.getBlackPlayer() != null ? game.getBlackPlayer().getName() : rawTags.get("Black");
+		String result = game.getResult() != null ? game.getResult().getDescription() : rawTags.get("Result");
 
-		addTag(tags, "Event", evtName);
-		addTag(tags, "Site", siteName);
-		addTag(tags, "Date", game.getDate());
-		addTag(tags, "Round", round);
-		addTag(tags, "White", white);
-		addTag(tags, "Black", black);
+		addTag(tags, "Event",  coalesce(evtName, rawTags.get("Event")));
+		addTag(tags, "Site",   siteName);
+		addTag(tags, "Date",   coalesce(game.getDate(), rawTags.get("Date")));
+		addTag(tags, "Round",  round);
+		addTag(tags, "White",  white);
+		addTag(tags, "Black",  black);
 		addTag(tags, "Result", result);
 
+		// ELO — tenta chesslib depois rawTags
 		Player wp = game.getWhitePlayer();
 		Player bp = game.getBlackPlayer();
 		if (wp != null && wp.getElo() > 0)
 			tags.put("WhiteElo", String.valueOf(wp.getElo()));
+		else if (rawTags.containsKey("WhiteElo"))
+			tags.put("WhiteElo", rawTags.get("WhiteElo"));
+
 		if (bp != null && bp.getElo() > 0)
 			tags.put("BlackElo", String.valueOf(bp.getElo()));
+		else if (rawTags.containsKey("BlackElo"))
+			tags.put("BlackElo", rawTags.get("BlackElo"));
 
+		// Tags opcionais — extraídas explicitamente do bloco bruto
+		// (o chesslib frequentemente não as preserva em getProperty())
+		for (String key : List.of(
+				"Opening", "ECO", "TimeControl", "Termination",
+				"Variant", "WhiteRatingDiff", "BlackRatingDiff",
+				"UTCDate", "UTCTime", "WhiteTitle", "BlackTitle")) {
+			String val = coalesce(getPropertyValue(game, key), rawTags.get(key));
+			if (!isBlankOrUnknown(val))
+				tags.put(key, val);
+		}
+
+		// Demais tags de getProperty() não cobertas acima
 		if (game.getProperty() != null) {
 			game.getProperty().forEach((k, v) -> {
-				if (v != null && !v.isBlank())
-					tags.putIfAbsent(k, v);
+				if (v != null && !v.toString().isBlank())
+					tags.putIfAbsent(k, v.toString());
 			});
 		}
+		// Demais tags brutas não cobertas acima
+		rawTags.forEach((k, v) -> {
+			if (!isBlankOrUnknown(v))
+				tags.putIfAbsent(k, v);
+		});
 
-		// ── FEN inicial — três fontes em ordem de confiança ───────
-		//
-		// 1. rawFenFromPgn: extraído do texto PGN bruto via regex (mais
-		// confiável — não depende do chesslib preservar getProperty()).
-		// 2. tags.get("FEN"): via chesslib.getProperty() (raramente funciona
-		// para FEN/SetUp no chesslib 1.3.6).
-		// 3. START_FEN: posição padrão como último recurso.
-		//
+		// ── FEN inicial ───────────────────────────────────────────────────
+		String rawFenFromPgn = rawTags.get("FEN");
 		String setupFen = rawFenFromPgn;
-		if (isBlankOrUnknown(setupFen)) {
+		if (isBlankOrUnknown(setupFen))
 			setupFen = tags.get("FEN");
-		}
-		if (isBlankOrUnknown(setupFen)) {
+		if (isBlankOrUnknown(setupFen))
 			setupFen = START_FEN;
-		}
 
-		// Garante que o FEN customizado também esteja nas tags (para export)
 		if (!START_FEN.equals(setupFen)) {
-			tags.put("FEN", setupFen);
+			tags.put("FEN",   setupFen);
 			tags.put("SetUp", "1");
 		}
 
 		log.debug("Partida {}: setupFen='{}'", index, setupFen);
 
-		// ── MoveList com FEN correto ──────────────────────────────
+		// ── MoveList com FEN correto ──────────────────────────────────────
 		MoveList halfMoves = resolveHalfMoves(index, game, setupFen, rawMoveText);
 
-		// ── Replay para gerar FENs e SANs ─────────────────────────
+		// ── Replay para gerar FENs e SANs ─────────────────────────────────
 		List<MoveEntry> entries = new ArrayList<>(halfMoves.size());
 		Board board = new Board();
 		board.loadFromFen(setupFen);
@@ -233,15 +254,6 @@ public class PgnService {
 
 	// ── Resolução de MoveList ────────────────────────────────────
 
-	/**
-	 * Retorna uma {@link MoveList} com os {@link Move} objects resolvidos contra a
-	 * FEN correta.
-	 *
-	 * <p>
-	 * Para a posição padrão retorna {@code game.getHalfMoves()} diretamente (sem
-	 * problema). Para FEN customizada, usa o parser token a token.
-	 * </p>
-	 */
 	private MoveList resolveHalfMoves(int index, Game game, String setupFen, String rawMoveText) {
 		if (START_FEN.equals(setupFen)) {
 			return game.getHalfMoves();
@@ -249,7 +261,6 @@ public class PgnService {
 
 		log.debug("Partida {}: FEN customizada — usando parser token a token.", index);
 
-		// Fonte 1: rawMoveText capturado ANTES de loadMoveText()
 		if (!isBlankOrUnknown(rawMoveText)) {
 			MoveList result = parseMovesTokenByToken(index, setupFen, stripAnnotations(rawMoveText));
 			if (!result.isEmpty()) {
@@ -261,7 +272,6 @@ public class PgnService {
 			log.warn("Partida {}: rawMoveText nulo/vazio.", index);
 		}
 
-		// Fonte 2: toSan() dos halfMoves já carregados (strings SAN preservadas)
 		try {
 			String sanText = game.getHalfMoves().toSan();
 			if (!isBlankOrUnknown(sanText)) {
@@ -275,21 +285,10 @@ public class PgnService {
 			log.warn("Partida {}: toSan() falhou: {}", index, e.getMessage());
 		}
 
-		log.warn("Partida {}: todas as fontes falharam — usando halfMoves original (NPE provável).", index);
+		log.warn("Partida {}: todas as fontes falharam — usando halfMoves original.", index);
 		return game.getHalfMoves();
 	}
 
-	/**
-	 * Parseia lances SAN um token por vez, mantendo um {@link Board} auxiliar
-	 * sincronizado.
-	 *
-	 * <p>
-	 * Cada chamada a {@code new MoveList(aux.getFen())} cria um contexto limpo com
-	 * o FEN <em>corrente</em> daquele ply. Isso evita o problema de desambiguação
-	 * incorreta que ocorre quando se parseia a sequência inteira a partir do FEN
-	 * inicial.
-	 * </p>
-	 */
 	private MoveList parseMovesTokenByToken(int index, String setupFen, String cleanedSan) {
 		MoveList result = new MoveList(setupFen);
 		Board aux = new Board();
@@ -321,63 +320,32 @@ public class PgnService {
 		return result;
 	}
 
-	/**
-	 * Remove comentários ({@code { }}), variantes ({@code ( )}), anotações NAG
-	 * ({@code $N}), numeração de lances e token de resultado do texto PGN de
-	 * lances. Preserva tokens SAN incluindo {@code O-O}, {@code +}, {@code #},
-	 * {@code =Q}, etc.
-	 */
 	private String stripAnnotations(String moveText) {
 		StringBuilder sb = new StringBuilder(moveText.length());
 		int depth = 0;
 		boolean inBrace = false;
-		boolean inSemi = false;
+		boolean inSemi  = false;
 
 		for (int i = 0; i < moveText.length(); i++) {
 			char c = moveText.charAt(i);
-			if (inSemi) {
-				if (c == '\n')
-					inSemi = false;
-				continue;
-			}
-			if (inBrace) {
-				if (c == '}')
-					inBrace = false;
-				continue;
-			}
-			if (c == '{') {
-				inBrace = true;
-				continue;
-			}
-			if (c == ';') {
-				inSemi = true;
-				continue;
-			}
-			if (c == '(') {
-				depth++;
-				continue;
-			}
-			if (c == ')') {
-				if (depth > 0)
-					depth--;
-				continue;
-			}
-			if (depth == 0)
-				sb.append(c);
+			if (inSemi)  { if (c == '\n') inSemi  = false; continue; }
+			if (inBrace) { if (c == '}')  inBrace = false; continue; }
+			if (c == '{')  { inBrace = true;  continue; }
+			if (c == ';')  { inSemi  = true;  continue; }
+			if (c == '(')  { depth++;         continue; }
+			if (c == ')') { if (depth > 0) depth--; continue; }
+			if (depth == 0) sb.append(c);
 		}
 
-		return sb.toString().replaceAll("\\$\\d+", " ") // NAG
-				.replaceAll("1-0|0-1|1/2-1/2|\\*", " ") // resultado
-				.replaceAll("\\d+\\.+", " ") // numeração
+		return sb.toString()
+				.replaceAll("\\$\\d+", " ")
+				.replaceAll("1-0|0-1|1/2-1/2|\\*", " ")
+				.replaceAll("\\d+\\.+", " ")
 				.replaceAll("\\s+", " ").trim();
 	}
 
 	// ── Exportação PGN ───────────────────────────────────────────
 
-	/**
-	 * Serializa as partidas (com análise) para PGN anotado. Avaliações são emitidas
-	 * como comentários Lichess: {@code { [%eval +0.28] }}
-	 */
 	public String exportPgn(List<GameData> games) {
 		StringBuilder sb = new StringBuilder();
 		for (GameData g : games) {
@@ -412,17 +380,15 @@ public class PgnService {
 
 	// ── Helpers ──────────────────────────────────────────────────
 
-	/** Converte {@link Move} para notação UCI ("e2e4", "e7e8q"). */
 	private String toUci(Move move) {
-		String from = move.getFrom().value().toLowerCase(Locale.ROOT);
-		String to = move.getTo().value().toLowerCase(Locale.ROOT);
+		String from  = move.getFrom().value().toLowerCase(Locale.ROOT);
+		String to    = move.getTo().value().toLowerCase(Locale.ROOT);
 		String promo = "";
 		if (move.getPromotion() != null && move.getPromotion() != Piece.NONE)
 			promo = move.getPromotion().getFenSymbol().toLowerCase(Locale.ROOT);
 		return from + to + promo;
 	}
 
-	/** Tenta obter a SAN do lance via chesslib. Retorna UCI como fallback. */
 	private String toSan(Board board, Move move) {
 		try {
 			MoveList ml = new MoveList(board.getFen());
@@ -436,42 +402,32 @@ public class PgnService {
 		return toUci(move);
 	}
 
-	/**
-	 * Extrai o valor da estrutura retornada por {@code PgnHolder.getEvent()}. O
-	 * PgnHolder retorna um {@code Map<String, Object>} onde a chave é o nome do
-	 * evento.
-	 */
 	private String extractPgnHolderValue(Object mapOrValue) {
-		if (mapOrValue == null)
-			return null;
-
+		if (mapOrValue == null) return null;
 		if (mapOrValue instanceof Map<?, ?> map) {
-			if (map.isEmpty())
-				return null;
+			if (map.isEmpty()) return null;
 			Object key = map.keySet().iterator().next();
-			if (key != null)
-				return key.toString();
+			if (key != null) return key.toString();
 			Object value = map.values().iterator().next();
 			if (value != null) {
-				try {
-					return (String) value.getClass().getMethod("getName").invoke(value);
-				} catch (Exception e) {
-					return value.toString();
-				}
+				try { return (String) value.getClass().getMethod("getName").invoke(value); }
+				catch (Exception e) { return value.toString(); }
 			}
 		}
-
-		if (mapOrValue instanceof String s)
-			return s;
+		if (mapOrValue instanceof String s) return s;
 		return mapOrValue.toString();
 	}
 
 	private String getPropertyValue(Game game, String key) {
-		if (game.getProperty() != null) {
-			Object v = game.getProperty().get(key);
-			if (v != null)
-				return v.toString();
-		}
+		if (game.getProperty() == null) return null;
+		Object v = game.getProperty().get(key);
+		return v != null ? v.toString() : null;
+	}
+
+	/** Retorna o primeiro valor não nulo/vazio/desconhecido da lista. */
+	private String coalesce(String... values) {
+		for (String v : values)
+			if (!isBlankOrUnknown(v)) return v;
 		return null;
 	}
 
