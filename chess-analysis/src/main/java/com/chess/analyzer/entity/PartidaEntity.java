@@ -12,11 +12,10 @@ import java.util.Map;
 /**
  * Entidade JPA que persiste uma partida de xadrez no PostgreSQL.
  *
- * <p>A identidade de negócio é representada pelo campo {@code gameId}: um
- * SHA-256 hex (64 chars) calculado sobre os 7 campos do Seven-Tag Roster
- * mais o FEN inicial. Esse valor é único no banco ({@code UNIQUE} constraint)
- * e serve como critério exclusivo de upsert — eliminando a necessidade da
- * checagem dupla anterior ({@code fontePgn+pgnIndex} / {@code gameIdentity}).</p>
+ * <p>A identidade de negócio é representada pelo campo {@code gameId}:
+ * quando o PGN contém a tag {@code [GameId "myF6FTAy"]}, esse valor é
+ * usado diretamente. Caso contrário, é calculado um SHA-256 hex (64 chars)
+ * sobre os campos do Seven-Tag Roster + FEN inicial.</p>
  */
 @Entity
 @Table(
@@ -43,14 +42,17 @@ public class PartidaEntity {
     private Long id;
 
     /**
-     * Identificador estável de negócio: SHA-256 hex dos campos identitários
-     * ({@code White|Black|Event|Site|Date|Round|Result|initialFen}).
+     * Identificador estável de negócio.
      *
-     * <p>Imutável após a criação ({@code updatable = false}) e único no banco
-     * ({@code unique = true}). É o único critério usado para detectar
-     * duplicatas / reimportações.</p>
+     * <ul>
+     *   <li>PGN com tag {@code GameId} (ex: Lichess) → valor nativo, ex: {@code "myF6FTAy"}</li>
+     *   <li>PGN sem a tag → SHA-256 hex (64 chars) dos campos identitários</li>
+     * </ul>
+     *
+     * <p>Imutável após criação ({@code updatable = false}) e único no banco
+     * ({@code unique = true}).</p>
      */
-    @Column(name = "game_id", length = 64, nullable = false,
+    @Column(name = "game_id", length = 255, nullable = false,
             unique = true, updatable = false)
     private String gameId;
 
@@ -58,10 +60,6 @@ public class PartidaEntity {
     @Column(name = "event",  length = 255) private String event;
     @Column(name = "site",   length = 255) private String site;
 
-    /**
-     * Data da partida parseada do PGN (tag "Date").
-     * Pode ser nula quando o PGN contém "????.??.??" ou valor inválido.
-     */
     @Column(name = "date") private LocalDate date;
 
     @Column(name = "round",  length = 20)  private String round;
@@ -70,13 +68,8 @@ public class PartidaEntity {
     @Column(name = "result", length = 10)  private String result;
 
     // ── Campos extras (Lichess / FIDE / chess.com) ────────────────────────
-
-    /** ELO das brancas; nulo quando ausente ou não numérico no PGN. */
     @Column(name = "white_elo") private Integer whiteElo;
-
-    /** ELO das pretas; nulo quando ausente ou não numérico no PGN. */
     @Column(name = "black_elo") private Integer blackElo;
-
     @Column(name = "white_rating_diff") private Integer whiteRatingDiff;
     @Column(name = "black_rating_diff") private Integer blackRatingDiff;
 
@@ -86,23 +79,14 @@ public class PartidaEntity {
     @Column(name = "termination",  length = 100) private String termination;
     @Column(name = "variant",      length = 50)  private String variant;
 
-    /**
-     * Data/hora UTC combinada das tags UTCDate + UTCTime do Lichess.
-     * Nula quando qualquer uma das tags estiver ausente ou inválida.
-     */
     @Column(name = "utc_datetime") private LocalDateTime utcDatetime;
 
-    // ── Metadados internos (rastreabilidade de importação) ────────────────
+    // ── Metadados internos ────────────────────────────────────────────────
     @Column(name = "initial_fen", length = 100) private String initialFen;
 
-    /** Índice 0-based da partida no arquivo PGN de origem (apenas rastreabilidade). */
     @Column(name = "pgn_index", nullable = false)
     private int pgnIndex;
 
-    /**
-     * Nome ou hash do arquivo PGN de origem (apenas rastreabilidade).
-     * Não é mais usado como critério de upsert — substituído por {@code gameId}.
-     */
     @Column(name = "fonte_pgn", length = 255)
     private String fontePgn;
 
@@ -112,19 +96,8 @@ public class PartidaEntity {
     @OrderBy("ordem ASC")
     private List<LanceEntity> lances = new ArrayList<>();
 
-    // ── Construtor protegido — uso exclusivo do JPA/Hibernate ─────────────
     protected PartidaEntity() {}
 
-    // ── Construtor de domínio ─────────────────────────────────────────────
-    /**
-     * Cria uma partida a partir dos metadados extraídos de um arquivo PGN.
-     *
-     * @param pgnIndex   índice 0-based no arquivo PGN de origem
-     * @param fontePgn   nome ou hash do arquivo PGN (rastreabilidade)
-     * @param gameId     SHA-256 hex calculado por {@link com.chess.analyzer.model.GameData#getGameId()}
-     * @param tags       mapa completo de tags do cabeçalho PGN
-     * @param initialFen FEN da posição inicial (posição padrão ou SetUp)
-     */
     public PartidaEntity(int pgnIndex, String fontePgn, String gameId,
                          Map<String, String> tags, String initialFen) {
         this.pgnIndex   = pgnIndex;
@@ -132,7 +105,6 @@ public class PartidaEntity {
         this.gameId     = gameId;
         this.initialFen = initialFen;
 
-        // Seven-Tag Roster
         this.event  = tags.get("Event");
         this.site   = tags.get("Site");
         this.date   = parseDate(tags.get("Date"));
@@ -141,7 +113,6 @@ public class PartidaEntity {
         this.black  = tags.get("Black");
         this.result = tags.get("Result");
 
-        // Campos extras
         this.whiteElo         = parseIntOrNull(tags.get("WhiteElo"));
         this.blackElo         = parseIntOrNull(tags.get("BlackElo"));
         this.whiteRatingDiff  = parseIntOrNull(tags.get("WhiteRatingDiff"));
@@ -154,8 +125,7 @@ public class PartidaEntity {
         this.utcDatetime      = parseUtcDatetime(tags.get("UTCDate"), tags.get("UTCTime"));
     }
 
-    // ── Getters (somente leitura — sem setters) ───────────────────────────
-
+    // ── Getters ───────────────────────────────────────────────────────────
     public Long          getId()              { return id; }
     public String        getGameId()          { return gameId; }
     public int           getPgnIndex()        { return pgnIndex; }
@@ -179,13 +149,11 @@ public class PartidaEntity {
     public LocalDateTime getUtcDatetime()     { return utcDatetime; }
     public String        getInitialFen()      { return initialFen; }
 
-    /** Retorna uma visão não modificável da lista de lances. */
     public List<LanceEntity> getLances() {
         return Collections.unmodifiableList(lances);
     }
 
     // ── Métodos de domínio ────────────────────────────────────────────────
-
     public void addLance(LanceEntity lance) {
         lance.associarPartida(this);
         lances.add(lance);
@@ -204,39 +172,30 @@ public class PartidaEntity {
     }
 
     // ── Helpers de parse ──────────────────────────────────────────────────
-
     private static LocalDate parseDate(String raw) {
         if (raw == null || raw.contains("?")) return null;
-        try {
-            return LocalDate.parse(raw.replace('.', '-'));
-        } catch (Exception e) {
-            return null;
-        }
+        try { return LocalDate.parse(raw.replace('.', '-')); }
+        catch (Exception e) { return null; }
     }
 
     private static LocalDateTime parseUtcDatetime(String rawDate, String rawTime) {
         if (rawDate == null || rawTime == null
                 || rawDate.contains("?") || rawTime.contains("?")) return null;
         try {
-            LocalDate d     = LocalDate.parse(rawDate.replace('.', '-'));
-            String[]  parts = rawTime.split(":");
+            LocalDate d = LocalDate.parse(rawDate.replace('.', '-'));
+            String[] parts = rawTime.split(":");
             return d.atTime(
                 Integer.parseInt(parts[0]),
                 Integer.parseInt(parts[1]),
                 Integer.parseInt(parts[2])
             );
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
     }
 
     private static Integer parseIntOrNull(String raw) {
         if (raw == null || raw.isBlank() || "?".equals(raw.trim())) return null;
-        try {
-            return Integer.parseInt(raw.trim());
-        } catch (NumberFormatException e) {
-            return null;
-        }
+        try { return Integer.parseInt(raw.trim()); }
+        catch (NumberFormatException e) { return null; }
     }
 
     private static String nvl(String v) {
