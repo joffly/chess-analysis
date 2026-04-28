@@ -17,13 +17,13 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Bean isolado responsavel pelo upsert transacional de uma unica partida.
+ * Bean isolado responsável pelo upsert transacional de uma única partida.
  *
- * <p>Existe como servico separado de {@link PartidaSaveService} para contornar
- * a limitacao do Spring AOP: chamadas self-invocation (this.metodo()) dentro
- * da mesma classe nao passam pelo proxy CGLIB e, portanto, ignoram qualquer
- * anotacao {@code @Transactional}. Ao extrair o metodo para um bean proprio,
- * a chamada atravessa o proxy e a propagacao REQUIRES_NEW e honrada.</p>
+ * <p>Existe como serviço separado de {@link PartidaSaveService} para contornar
+ * a limitação do Spring AOP: chamadas self-invocation (this.metodo()) dentro
+ * da mesma classe não passam pelo proxy CGLIB e, portanto, ignoram qualquer
+ * anotação {@code @Transactional}. Ao extrair o método para um bean próprio,
+ * a chamada atravessa o proxy e a propagação REQUIRES_NEW é honrada.</p>
  */
 @Service
 public class PartidaUpsertService {
@@ -40,14 +40,7 @@ public class PartidaUpsertService {
     }
 
     /**
-     * Insere ou atualiza uma unica partida em sua propria transacao.
-     *
-     * <p>REQUIRES_NEW garante commit imediato ao termino do metodo,
-     * independentemente de qualquer transacao externa. Uma falha nesta
-     * partida nao afeta as demais do lote.</p>
-     *
-     * @param game GameData ja analisado (ou nao) pronto para persistencia
-     * @return resultado da operacao (CRIADA / ATUALIZADA)
+     * Insere ou atualiza uma única partida em sua própria transação.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public PartidaSaveService.SaveResult upsertPartida(GameData game) {
@@ -55,7 +48,6 @@ public class PartidaUpsertService {
         Optional<PartidaEntity> existente = partidaRepository.findByGameId(gameId);
 
         if (existente.isPresent()) {
-            // UPDATE: apaga lances antigos e regrava com avaliacoes novas
             PartidaEntity entidade = existente.get();
             lanceRepository.deleteByPartidaId(entidade.getId());
             lanceRepository.flush();
@@ -64,7 +56,6 @@ public class PartidaUpsertService {
             log.debug("Partida '{}' ({}) atualizada.", game.getTitle(), gameId);
             return PartidaSaveService.SaveResult.atualizada(game.getIndex(), game.getTitle());
         } else {
-            // INSERT: cria entidade nova
             Map<String, String> tags = game.getTags();
             String fontePgn = tags.getOrDefault("__fonte_pgn__", "unknown");
             PartidaEntity entidade = new PartidaEntity(
@@ -92,12 +83,14 @@ public class PartidaUpsertService {
                     m.getFenAfter()
             );
             if (m.isAnalyzed()) {
+                // Classifica blunder pelo critério Lichess (winning chances)
+                boolean blunder = GameAnalysisService.isBlunder(m);
                 lance.registrarAnalise(
                         m.getEval(),
                         m.getMateIn(),
                         m.getBestMove(),
                         m.getPv(),
-                        false
+                        blunder
                 );
             }
             entidade.addLance(lance);

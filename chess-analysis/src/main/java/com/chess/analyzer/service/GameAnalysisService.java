@@ -20,6 +20,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.chess.analyzer.model.GameData;
 import com.chess.analyzer.model.MoveEntry;
 import com.chess.analyzer.model.StockfishResult;
+import com.chess.analyzer.util.LichessBlunderClassifier;
 import com.github.bhlangonijr.chesslib.Board;
 import com.github.bhlangonijr.chesslib.Piece;
 import com.github.bhlangonijr.chesslib.PieceType;
@@ -31,8 +32,15 @@ import com.github.bhlangonijr.chesslib.move.Move;
  * Serviço central que mantém o estado em memória das partidas carregadas e
  * coordena a análise com o Stockfish via virtual threads (Java 21),
  * transmitindo progresso em tempo real por Server-Sent Events (SSE).
+ *
+ * <h3>Classificação de blunder</h3>
+ * <p>Usamos o critério exato do Lichess: queda de <em>winning chances</em>
+ * calculada via sigmoid sobre centipeões. Um lance é blunder quando essa
+ * queda (na perspectiva do jogador) for &ge; 0.30 na escala [-1, +1].<br>
+ * A avaliação <em>após</em> o lance jogado é obtida da análise do ply
+ * seguinte (posição resultante), e então propagada de volta ao ply anterior
+ * via {@link MoveEntry#setEvalAfter} antes de persistir.</p>
  */
-
 @Service
 public class GameAnalysisService {
 
@@ -57,7 +65,7 @@ public class GameAnalysisService {
 		this.pgnService = pgnService;
 	}
 
-	// ── Gerenciamento de estado ──────────────────────────────────
+	// ── Gerenciamento de estado ────────────────────────────────────
 
 	public void setGames(List<GameData> loaded) {
 		games.clear();
@@ -85,10 +93,10 @@ public class GameAnalysisService {
 		return analyzing.get();
 	}
 
-	// ── SSE ──────────────────────────────────────────────────────
+	// ── SSE ────────────────────────────────────────────────────
 
 	public SseEmitter createEmitter() {
-		SseEmitter emitter = new SseEmitter(0L); // sem timeout
+		SseEmitter emitter = new SseEmitter(0L);
 		emitters.add(emitter);
 		emitter.onCompletion(() -> emitters.remove(emitter));
 		emitter.onTimeout(() -> emitters.remove(emitter));
@@ -98,12 +106,6 @@ public class GameAnalysisService {
 
 	// ── Análise ──────────────────────────────────────────────────
 
-	/**
-	 * Inicia a análise de todas as partidas em uma virtual thread. Só permite uma
-	 * análise por vez.
-	 *
-	 * @return {@code false} se já houver análise em andamento
-	 */
 	public boolean startAnalysis() {
 		if (!analyzing.compareAndSet(false, true)) {
 			log.warn("Análise já em andamento.");
@@ -114,7 +116,6 @@ public class GameAnalysisService {
 				runAnalysis();
 			} catch (Exception e) {
 				log.error("Erro na análise: {}", e.getMessage(), e);
-				// Tratamento de nulo obrigatório para o Map.of()
 				String errorMessage = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
 				broadcast("ERROR", Map.of("message", errorMessage));
 			} finally {
@@ -133,18 +134,17 @@ public class GameAnalysisService {
 		}
 	}
 
-	// ── Loop de análise ──────────────────────────────────────────
+	// ── Loop de análise ──────────────────────────────────────────────
 
-	/**
-	 * Executa a análise paralela usando múltiplas virtual threads, uma por instância Stockfish.
-	 * Cada lance é analisado concorrentemente respeitando a ordem dentro da partida.
-	 */
 	private void runAnalysis() throws Exception {
 		cleanAnalysisContext();
 		int totalPlies = games.stream().mapToInt(g -> g.getMoves().size()).sum();
 		AtomicInteger analyzedCounter = new AtomicInteger(0);
 
-		broadcast("START", Map.of("totalGames", games.size(), "totalMoves", totalPlies, "depth", analysisDepth,
+		broadcast("START", Map.of(
+				"totalGames", games.size(),
+				"totalMoves", totalPlies,
+				"depth", analysisDepth,
 				"poolSize", stockfishPool.getPoolSize()));
 
 		// Coleta todas as posições para análise em paralelo
@@ -152,12 +152,11 @@ public class GameAnalysisService {
 		for (GameData game : games) {
 			List<MoveEntry> moves = game.getMoves();
 			for (int mi = 0; mi < moves.size(); mi++) {
-				MoveEntry move = moves.get(mi);
-				tasks.add(new AnalysisTask(game, mi, move));
+				tasks.add(new AnalysisTask(game, mi, moves.get(mi)));
 			}
 		}
 
-		// Executa análises em paralelo usando CompletableFuture com virtual threads
+		// Fase 1: analisa todas as posições em paralelo
 		try {
 			List<CompletableFuture<Void>> futures = tasks.stream()
 					.map(task -> {
@@ -175,9 +174,7 @@ public class GameAnalysisService {
 					})
 					.toList();
 
-			// Aguarda todas as tarefas completarem
 			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
 		} catch (Exception e) {
 			if (e.getCause() instanceof InterruptedException) {
 				Thread.currentThread().interrupt();
@@ -187,25 +184,110 @@ public class GameAnalysisService {
 			throw e;
 		}
 
-		// Marca todas as partidas como analisadas
+		// Fase 2: propaga evalAfter e calcula blunder (sequencial por partida)
+		// Precisa ser feito DEPOIS que todos os plies foram analisados,
+		// pois o evalAfter do lance i é o eval do lance i+1.
+		for (GameData game : games) {
+			propagateEvalAfterAndClassify(game);
+		}
+
 		games.forEach(game -> game.setFullyAnalyzed(true));
 		games.forEach(game -> broadcast("GAME_DONE",
 				Map.of("gameIndex", game.getIndex(), "title", game.getTitle())));
 	}
 
 	/**
-	 * Tarefa de análise individual para um lance específico.
+	 * Para cada ply da partida, propaga a avaliação do ply seguinte como
+	 * {@code evalAfter} do ply atual, e classifica o lance como blunder
+	 * usando o critério Lichess.
+	 *
+	 * <p>A avaliação que o Stockfish retorna para o ply {@code i} é a melhor
+	 * jogada possível em {@code fenBefore[i]}. Para saber o que aconteceu
+	 * <em>após</em> o lance jogado, usamos a avaliação de {@code fenBefore[i+1]},
+	 * que é exatamente {@code fenAfter[i]}.</p>
 	 */
-	private record AnalysisTask(GameData game, int moveIndex, MoveEntry move) {
+	private void propagateEvalAfterAndClassify(GameData game) {
+		List<MoveEntry> moves = game.getMoves();
+		for (int i = 0; i < moves.size(); i++) {
+			MoveEntry current = moves.get(i);
+			if (!current.isAnalyzed()) continue;
+
+			// evalAfter do lance i = eval do lance i+1 (mesmo FEN)
+			if (i + 1 < moves.size()) {
+				MoveEntry next = moves.get(i + 1);
+				if (next.isAnalyzed()) {
+					current.setEvalAfter(next.getEval(), next.getMateIn());
+				}
+			}
+			// Último lance: não há próximo ply; evalAfter permanece null
+		}
 	}
 
 	/**
-	 * Executa a análise de uma única tarefa e transmite o resultado via SSE.
+	 * Classifica um lance como blunder usando o critério Lichess.
+	 *
+	 * <p>Casos tratados:</p>
+	 * <ol>
+	 *   <li>Ambas avaliações são centipeões → usa sigmoid + threshold 0.30.</li>
+	 *   <li>Antes era mate (jogador tinha mate) e depois não é mais
+	 *       → MateLost: blunder (salvo posições quase ganhas).</li>
+	 *   <li>Antes não era mate e depois o adversário tem mate
+	 *       → MateCreated: blunder (salvo posições já perdidas).</li>
+	 * </ol>
+	 *
+	 * @param move       lance analisado
+	 * @return {@code true} se for blunder
 	 */
+	public static boolean isBlunder(MoveEntry move) {
+		if (!move.isAnalyzed()) return false;
+
+		Double cpBefore = move.getEval();
+		Double cpAfter  = move.getEvalAfter();
+		Integer mateBefore = move.getMateIn();
+		Integer mateAfter  = move.getMateInAfter();
+
+		// --- Caso 2: MateLost -----------------------------------------------
+		// O jogador tinha mate forçado (mateBefore > 0 da perspectiva do jogador)
+		// e depois do lance não existe mais mate positivo.
+		boolean hadPosMate = (mateBefore != null) &&
+				(move.isWhiteTurn() ? mateBefore > 0 : mateBefore < 0);
+		boolean stillHasMate = (mateAfter != null) &&
+				(move.isWhiteTurn() ? mateAfter < 0 : mateAfter > 0); // atenção: perspectiva invertida
+		if (hadPosMate && !stillHasMate) {
+			// cpAfter da perspectiva do jogador
+			double afterPov = cpAfter != null
+					? (move.isWhiteTurn() ? cpAfter : -cpAfter)
+					: 0.0;
+			return LichessBlunderClassifier.classifyMateLost(afterPov)
+					== LichessBlunderClassifier.Judgement.BLUNDER;
+		}
+
+		// --- Caso 3: MateCreated -------------------------------------------
+		// O adversário ganhou mate forçado que não existia antes.
+		boolean oppHasMateNow = (mateAfter != null) &&
+				(move.isWhiteTurn() ? mateAfter < 0 : mateAfter > 0);
+		if (oppHasMateNow && mateBefore == null) {
+			double beforePov = cpBefore != null
+					? (move.isWhiteTurn() ? cpBefore : -cpBefore)
+					: 0.0;
+			return LichessBlunderClassifier.classifyMateCreated(beforePov)
+					== LichessBlunderClassifier.Judgement.BLUNDER;
+		}
+
+		// --- Caso 1: ambas avaliações em centipeões -------------------------
+		if (cpBefore == null || cpAfter == null) return false;
+		// cpBefore e cpAfter estão sempre na perspectiva das brancas (convenção Stockfish)
+		return LichessBlunderClassifier.isBlunder(
+				cpBefore * 100, // converte peões → centipeões
+				cpAfter  * 100,
+				move.isWhiteTurn());
+	}
+
+	private record AnalysisTask(GameData game, int moveIndex, MoveEntry move) {}
+
 	private void executeAnalysis(AnalysisTask task, AtomicInteger counter, int totalPlies)
 			throws Exception {
-		if (!analyzing.get())
-			return;
+		if (!analyzing.get()) return;
 
 		GameData game = task.game();
 		int mi = task.moveIndex();
@@ -213,6 +295,7 @@ public class GameAnalysisService {
 
 		StockfishResult r = stockfishPool.analyze(move.getFenBefore(), analysisDepth);
 
+		// setAnalysis grava eval/mateIn do fenBefore (melhor lance possível)
 		move.setAnalysis(r.mateIn() != null ? 0.0 : r.eval(), r.mateIn(), r.bestMove(), r.pv());
 
 		int analyzed = counter.incrementAndGet();
@@ -223,96 +306,78 @@ public class GameAnalysisService {
 		payload.put("eval", r.mateIn() != null ? null : r.eval());
 		payload.put("mateIn", r.mateIn());
 		payload.put("bestMove", uciToSan(move.getFenBefore(), r.bestMove()));
-		payload.put("pv", r.pv().stream().limit(5).map(pvUci -> uciToSan(getFenForPv(move.getFenBefore(), r.pv(), pvUci), pvUci)).toList());
+		payload.put("pv", r.pv().stream().limit(5)
+				.map(pvUci -> uciToSan(getFenForPv(move.getFenBefore(), r.pv(), pvUci), pvUci))
+				.toList());
 		payload.put("evalStr", move.getEvalFormatted());
 		payload.put("progress", analyzed * 100 / Math.max(1, totalPlies));
 		broadcast("MOVE_ANALYZED", payload);
 	}
 
 	private void cleanAnalysisContext() {
-		// 1. Resetar flags das partidas de forma declarativa (Stream API)
 		games.stream().filter(GameData::isFullyAnalyzed).forEach(g -> g.setFullyAnalyzed(false));
-
-		// 2. Limpar emissores inativos diretamente com removeIf
 		emitters.removeIf(emitter -> {
 			try {
-				// Envia o "ping" invisível
 				emitter.send(SseEmitter.event().comment("ping"));
-				return false; // Retorna false -> NÃO remove da lista (está ativo)
+				return false;
 			} catch (Exception e) {
 				log.warn("Emissor inativo removido. Motivo: {}", e.getMessage());
-				return true; // Retorna true -> REMOVE da lista (está inativo)
+				return true;
 			}
 		});
 	}
 
 	private static String uciToSan(String fen, String uci) {
-		if (uci == null || uci.isBlank())
-			return null;
+		if (uci == null || uci.isBlank()) return null;
 
 		Board board = new Board();
 		board.loadFromFen(fen);
 
 		Square from = Square.valueOf(uci.substring(0, 2).toUpperCase());
-		Square to = Square.valueOf(uci.substring(2, 4).toUpperCase());
-
+		Square to   = Square.valueOf(uci.substring(2, 4).toUpperCase());
 		PieceType pieceType = board.getPiece(from).getPieceType();
-		String fromStr = uci.substring(0, 2).toLowerCase(); // "e2"
-		String toStr = uci.substring(2, 4).toLowerCase(); // "e4"
+		String fromStr = uci.substring(0, 2).toLowerCase();
+		String toStr   = uci.substring(2, 4).toLowerCase();
 
-		// Roque: rei move 2 casas na coluna
-		if (pieceType == PieceType.KING && Math.abs(uci.charAt(2) - uci.charAt(0)) == 2) {
+		if (pieceType == PieceType.KING && Math.abs(uci.charAt(2) - uci.charAt(0)) == 2)
 			return uci.charAt(2) > uci.charAt(0) ? "O-O" : "O-O-O";
-		}
 
 		boolean isCapture = board.getPiece(to) != Piece.NONE
-				|| (pieceType == PieceType.PAWN && uci.charAt(0) != uci.charAt(2)); // en passant
+				|| (pieceType == PieceType.PAWN && uci.charAt(0) != uci.charAt(2));
 
 		StringBuilder san = new StringBuilder();
-
 		if (pieceType == PieceType.PAWN) {
-			if (isCapture)
-				san.append(fromStr.charAt(0)).append('x');
+			if (isCapture) san.append(fromStr.charAt(0)).append('x');
 			san.append(toStr);
-			if (uci.length() == 5) // promoção
-				san.append('=').append(Character.toUpperCase(uci.charAt(4)));
-
+			if (uci.length() == 5) san.append('=').append(Character.toUpperCase(uci.charAt(4)));
 		} else {
 			san.append(pieceType.getSanSymbol());
-
-			// Desambiguação: outras peças do mesmo tipo que também alcançam 'to'
-			List<Square> ambiguous = board.legalMoves().stream().filter(m -> m.getTo() == to && m.getFrom() != from)
-					.filter(m -> board.getPiece(m.getFrom()).getPieceType() == pieceType).map(Move::getFrom).toList();
-
+			List<Square> ambiguous = board.legalMoves().stream()
+					.filter(m -> m.getTo() == to && m.getFrom() != from)
+					.filter(m -> board.getPiece(m.getFrom()).getPieceType() == pieceType)
+					.map(Move::getFrom).toList();
 			if (!ambiguous.isEmpty()) {
 				boolean sameFile = ambiguous.stream()
 						.anyMatch(s -> s.toString().toLowerCase().charAt(0) == fromStr.charAt(0));
 				boolean sameRank = ambiguous.stream()
 						.anyMatch(s -> s.toString().toLowerCase().charAt(1) == fromStr.charAt(1));
-
-				if (!sameFile)
-					san.append(fromStr.charAt(0)); // só coluna
-				else if (!sameRank)
-					san.append(fromStr.charAt(1)); // só linha
-				else
-					san.append(fromStr); // coluna + linha
+				if (!sameFile)       san.append(fromStr.charAt(0));
+				else if (!sameRank)  san.append(fromStr.charAt(1));
+				else                 san.append(fromStr);
 			}
-
-			if (isCapture)
-				san.append('x');
+			if (isCapture) san.append('x');
 			san.append(toStr);
 		}
 
-		// Executa o lance para detectar xeque / xeque-mate
 		Piece promo = Piece.NONE;
 		if (uci.length() == 5) {
 			Side side = board.getSideToMove();
 			promo = switch (uci.charAt(4)) {
-			case 'q' -> side == Side.WHITE ? Piece.WHITE_QUEEN : Piece.BLACK_QUEEN;
-			case 'r' -> side == Side.WHITE ? Piece.WHITE_ROOK : Piece.BLACK_ROOK;
-			case 'b' -> side == Side.WHITE ? Piece.WHITE_BISHOP : Piece.BLACK_BISHOP;
-			case 'n' -> side == Side.WHITE ? Piece.WHITE_KNIGHT : Piece.BLACK_KNIGHT;
-			default -> Piece.NONE;
+				case 'q' -> side == Side.WHITE ? Piece.WHITE_QUEEN  : Piece.BLACK_QUEEN;
+				case 'r' -> side == Side.WHITE ? Piece.WHITE_ROOK   : Piece.BLACK_ROOK;
+				case 'b' -> side == Side.WHITE ? Piece.WHITE_BISHOP : Piece.BLACK_BISHOP;
+				case 'n' -> side == Side.WHITE ? Piece.WHITE_KNIGHT : Piece.BLACK_KNIGHT;
+				default  -> Piece.NONE;
 			};
 		}
 		board.doMove(new Move(from, to, promo));
@@ -322,72 +387,54 @@ public class GameAnalysisService {
 		return san.toString();
 	}
 
-	/**
-	 * Calcula o FEN resultante após aplicar uma sequência de lances UCI a partir de um FEN inicial.
-	 * Usado para converter lances da variante principal (PV) em SAN.
-	 */
 	private static String getFenForPv(String initialFen, List<String> pv, String targetUci) {
 		Board board = new Board();
 		board.loadFromFen(initialFen);
-
 		for (String uci : pv) {
-			if (uci.equals(targetUci)) {
-				return board.getFen();
-			}
+			if (uci.equals(targetUci)) return board.getFen();
 			try {
 				Square from = Square.valueOf(uci.substring(0, 2).toUpperCase());
-				Square to = Square.valueOf(uci.substring(2, 4).toUpperCase());
+				Square to   = Square.valueOf(uci.substring(2, 4).toUpperCase());
 				Piece promo = Piece.NONE;
 				if (uci.length() == 5) {
 					Side side = board.getSideToMove();
 					promo = switch (uci.charAt(4)) {
-					case 'q' -> side == Side.WHITE ? Piece.WHITE_QUEEN : Piece.BLACK_QUEEN;
-					case 'r' -> side == Side.WHITE ? Piece.WHITE_ROOK : Piece.BLACK_ROOK;
-					case 'b' -> side == Side.WHITE ? Piece.WHITE_BISHOP : Piece.BLACK_BISHOP;
-					case 'n' -> side == Side.WHITE ? Piece.WHITE_KNIGHT : Piece.BLACK_KNIGHT;
-					default -> Piece.NONE;
+						case 'q' -> side == Side.WHITE ? Piece.WHITE_QUEEN  : Piece.BLACK_QUEEN;
+						case 'r' -> side == Side.WHITE ? Piece.WHITE_ROOK   : Piece.BLACK_ROOK;
+						case 'b' -> side == Side.WHITE ? Piece.WHITE_BISHOP : Piece.BLACK_BISHOP;
+						case 'n' -> side == Side.WHITE ? Piece.WHITE_KNIGHT : Piece.BLACK_KNIGHT;
+						default  -> Piece.NONE;
 					};
 				}
 				board.doMove(new Move(from, to, promo));
 			} catch (Exception e) {
-				// Se houver erro, retorna o FEN atual para tentar conversão parcial
 				return board.getFen();
 			}
 		}
 		return board.getFen();
 	}
 
-	// ── Broadcast SSE ────────────────────────────────────────────
+	// ── Broadcast SSE ──────────────────────────────────────────────
 
 	private void broadcast(String eventName, Map<String, Object> data) {
-		if (emitters.isEmpty())
-			return;
-
+		if (emitters.isEmpty()) return;
 		String json = toJson(data);
-		List<SseEmitter> deadEmitters = new ArrayList<>();
-
+		List<SseEmitter> dead = new ArrayList<>();
 		for (SseEmitter emitter : emitters) {
 			try {
 				emitter.send(SseEmitter.event().name(eventName).data(json));
 			} catch (IOException e) {
-				// Adiciona na lista de falhas em vez de remover diretamente
-				deadEmitters.add(emitter);
+				dead.add(emitter);
 			}
 		}
-
-		// Remove todos os emissores inativos de forma thread-safe
-		if (!deadEmitters.isEmpty()) {
-			emitters.removeAll(deadEmitters);
-		}
+		if (!dead.isEmpty()) emitters.removeAll(dead);
 	}
 
-	/** Serialização JSON mínima sem dependências extras. */
 	private String toJson(Map<String, Object> map) {
 		StringBuilder sb = new StringBuilder("{");
 		boolean first = true;
 		for (var e : map.entrySet()) {
-			if (!first)
-				sb.append(",");
+			if (!first) sb.append(",");
 			first = false;
 			sb.append("\"").append(e.getKey()).append("\":");
 			Object v = e.getValue();
@@ -399,8 +446,7 @@ public class GameAnalysisService {
 				sb.append("[");
 				boolean lf = true;
 				for (Object item : list) {
-					if (!lf)
-						sb.append(",");
+					if (!lf) sb.append(",");
 					lf = false;
 					sb.append("\"").append(item).append("\"");
 				}
@@ -412,7 +458,7 @@ public class GameAnalysisService {
 		return sb.append("}").toString();
 	}
 
-	// ── Export ───────────────────────────────────────────────────
+	// ── Export ────────────────────────────────────────────────────
 
 	public String exportPgn() {
 		return pgnService.exportPgn(games);
