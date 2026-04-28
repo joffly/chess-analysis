@@ -88,7 +88,7 @@ public class StockfishPoolService implements AutoCloseable {
             ensureReady();
             send("position fen " + fen);
             send("go depth " + depth);
-            StockfishResult result = collectResult(fen);
+            StockfishResult result = collectResult(fen, null);
             log.trace("Stockfish #{} analisou FEN={} → {}", id, fen, result);
             return result;
         }
@@ -100,15 +100,15 @@ public class StockfishPoolService implements AutoCloseable {
          * @param fen     FEN da posição base
          * @param uciMove lance UCI a ser aplicado (ex: "e2e4")
          * @param depth   profundidade de análise
-         * @return resultado da análise da posição após o lance
+         * @return resultado da análise da posição após o lance, com fenAfterMove preenchido
          */
         public synchronized StockfishResult analyzeWithMove(String fen, String uciMove, int depth) throws IOException {
             ensureReady();
             send("position fen " + fen + " moves " + uciMove);
             send("go depth " + depth);
-            // O FEN para normalização de perspectiva é derivado do turno original invertido
+            // FEN com lado a mover invertido — usado para normalizar perspectiva
             String fenAfterMove = deriveFenSideToMove(fen);
-            StockfishResult result = collectResult(fenAfterMove);
+            StockfishResult result = collectResult(fenAfterMove, fenAfterMove);
             log.trace("Stockfish #{} analisou FEN={} moves={} → {}", id, fen, uciMove, result);
             return result;
         }
@@ -166,7 +166,7 @@ public class StockfishPoolService implements AutoCloseable {
             throw new IOException("Stream fechada antes de receber '%s'".formatted(keyword));
         }
 
-        private StockfishResult collectResult(String fen) throws IOException {
+        private StockfishResult collectResult(String fen, String fenAfterMove) throws IOException {
             String lastInfoLine = null;
             String line;
             while ((line = reader.readLine()) != null) {
@@ -174,12 +174,12 @@ public class StockfishPoolService implements AutoCloseable {
                 if (line.startsWith("info") && line.contains("score"))
                     lastInfoLine = line;
                 if (line.startsWith("bestmove"))
-                    return parseResult(lastInfoLine, line, fen);
+                    return parseResult(lastInfoLine, line, fen, fenAfterMove);
             }
             throw new IOException("Stream do Stockfish #%d encerrada sem 'bestmove'".formatted(id));
         }
 
-        private StockfishResult parseResult(String infoLine, String bestMoveLine, String fen) {
+        private StockfishResult parseResult(String infoLine, String bestMoveLine, String fen, String fenAfterMove) {
             String bestMove = null;
             if (bestMoveLine != null) {
                 String[] p = bestMoveLine.split("\\s+");
@@ -188,7 +188,7 @@ public class StockfishPoolService implements AutoCloseable {
             }
 
             if (infoLine == null)
-                return new StockfishResult(0.0, null, bestMove, List.of());
+                return new StockfishResult(0.0, null, bestMove, List.of(), fenAfterMove);
 
             String[] tokens = infoLine.split("\\s+");
             double eval = 0.0;
@@ -197,9 +197,9 @@ public class StockfishPoolService implements AutoCloseable {
 
             for (int i = 0; i < tokens.length; i++) {
                 switch (tokens[i]) {
-                    case "cp" -> eval = safeInt(tokens, i + 1) / 100.0;
+                    case "cp"   -> eval   = safeInt(tokens, i + 1) / 100.0;
                     case "mate" -> mateIn = safeInt(tokens, i + 1);
-                    case "pv" -> pv = new ArrayList<>(Arrays.asList(tokens).subList(i + 1, tokens.length));
+                    case "pv"   -> pv     = new ArrayList<>(Arrays.asList(tokens).subList(i + 1, tokens.length));
                 }
             }
 
@@ -211,7 +211,7 @@ public class StockfishPoolService implements AutoCloseable {
                     mateIn = -mateIn;
             }
 
-            return new StockfishResult(eval, mateIn, bestMove, List.copyOf(pv));
+            return new StockfishResult(eval, mateIn, bestMove, List.copyOf(pv), fenAfterMove);
         }
 
         private int safeInt(String[] tokens, int idx) {
@@ -291,13 +291,13 @@ public class StockfishPoolService implements AutoCloseable {
         if (!started)
             throw new IOException("Pool não está inicializado. Configure o caminho primeiro.");
 
-        StockfishInstance instance = available.take(); // Bloqueia até estar disponível
+        StockfishInstance instance = available.take();
         try {
             instance.setBusy(true);
             return instance.analyze(fen, depth);
         } finally {
             instance.setBusy(false);
-            available.offer(instance); // Devolve à fila
+            available.offer(instance);
         }
     }
 
@@ -305,8 +305,8 @@ public class StockfishPoolService implements AutoCloseable {
      * Analisa a posição resultante após aplicar {@code uciMove} ao {@code fen} informado.
      * Equivale a enviar ao Stockfish: {@code position fen <fen> moves <uciMove>}.
      *
-     * <p>Útil para avaliar a qualidade de um lance específico sem precisar calcular
-     * o FEN resultante externamente.</p>
+     * <p>O campo {@link StockfishResult#fenAfterMove()} é preenchido com o FEN resultante
+     * (lado a mover invertido), pronto para ser usado em avaliações subsequentes.</p>
      *
      * @param fen     FEN da posição base
      * @param uciMove lance UCI a aplicar (ex: "e2e4")
