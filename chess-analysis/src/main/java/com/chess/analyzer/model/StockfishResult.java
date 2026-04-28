@@ -11,7 +11,7 @@ import java.util.List;
  * @param pv       variante principal como lista de lances UCI
  */
 public record StockfishResult(
-        double       eval,
+        Double       eval,
         Integer      mateIn,
         String       bestMove,
         List<String> pv
