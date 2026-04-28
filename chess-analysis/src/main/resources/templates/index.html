@@ -431,6 +431,18 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
     </div>
     <div id="puzzle-result"></div>
     <div id="puzzle-pv"></div>
+    <!-- Detalhes do Puzzle -->
+    <div id="puzzle-details" style="max-width:480px;width:100%;padding:10px 14px;border-radius:8px;background:var(--card);border:1px solid var(--border);margin-top:10px;display:none">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Informações do Puzzle</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+        <div><span style="color:var(--muted)">Blunder:</span> <span id="pr-blunder" style="font-weight:600;color:var(--red)">—</span></div>
+        <div><span style="color:var(--muted)">Melhor lance:</span> <span id="pr-best" style="font-weight:600;color:var(--green)">—</span></div>
+        <div><span style="color:var(--muted)">Eval após:</span> <span id="pr-eval" style="font-weight:600">—</span></div>
+        <div><span style="color:var(--muted)">Lance #:</span> <span id="pr-movenum">—</span></div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--muted)">PV: <span id="pr-pv" style="font-family:monospace">—</span></div>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted)">Partida: <span id="pr-game">—</span></div>
+    </div>
   </div>
 
 </div><!-- /main -->
@@ -549,6 +561,8 @@ function renderPuzzle(idx) {
   document.getElementById('pr-pv').textContent=(p.pv&&p.pv.length)?p.pv.join(' '):'—';
   document.getElementById('pr-game').textContent=p.gameTitle||'—';
   document.getElementById('pr-movenum').textContent='Lance #'+p.moveNumber;
+  // Mostrar detalhes do puzzle
+  document.getElementById('puzzle-details').style.display='block';
   document.querySelectorAll('.pli').forEach(el=>el.classList.remove('pli-active'));
   const liEl=document.getElementById('pli-'+idx);
   if (liEl) { liEl.classList.add('pli-active'); liEl.scrollIntoView({block:'nearest'}); }
