@@ -1,179 +1,286 @@
 package com.chess.analyzer.service;
 
-import com.chess.analyzer.entity.LanceEntity;
-import com.chess.analyzer.model.PuzzleDto;
-import com.chess.analyzer.model.PuzzleEvalRequest;
-import com.chess.analyzer.model.PuzzleEvalResponse;
-import com.chess.analyzer.model.StockfishResult;
-import com.chess.analyzer.repository.PuzzleRepository;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.stream.Collectors;
+import com.chess.analyzer.model.GameData;
+import com.chess.analyzer.model.MoveEntry;
 
 /**
- * Serviço responsável por:
- * 1. Buscar puzzles (blunders) por abertura (ECO) no banco de dados.
- * 2. Avaliar o lance do usuário via Stockfish e compará-lo ao melhor lance.
+ * Serviço responsável por gerar problemas (puzzles) de xadrez a partir do
+ * "banco" em memória de partidas analisadas.
+ *
+ * Definição de blunder usada aqui (mesma adotada pela maioria dos sites como
+ * Lichess): a avaliação Stockfish da posição cai significativamente do ponto
+ * de vista do jogador que executou o lance. Limite default: queda &gt;= 1.5
+ * peões.
  */
 @Service
 public class PuzzleService {
 
-    private static final Logger log = LoggerFactory.getLogger(PuzzleService.class);
+	private static final Logger log = LoggerFactory.getLogger(PuzzleService.class);
 
-    /** Diferença mínima de avaliação (em peões) para considerar um lance "ruim". */
-    private static final double GOOD_MOVE_THRESHOLD = 0.5;
+	/** Queda mínima de avaliação (em peões) para classificar um lance como blunder. */
+	public static final double BLUNDER_THRESHOLD = 1.5;
 
-    /** Profundidade de análise para avaliação de lances do usuário. */
-    private static final int PUZZLE_DEPTH = 18;
+	private final GameAnalysisService analysisService;
 
-    private final PuzzleRepository puzzleRepository;
-    private final StockfishPoolService stockfishPool;
+	public PuzzleService(GameAnalysisService analysisService) {
+		this.analysisService = analysisService;
+	}
 
-    public PuzzleService(PuzzleRepository puzzleRepository, StockfishPoolService stockfishPool) {
-        this.puzzleRepository = puzzleRepository;
-        this.stockfishPool    = stockfishPool;
-    }
+	// ── ECOs disponíveis ────────────────────────────────────────────
 
-    // ── Busca de Puzzles ─────────────────────────────────────────────────────
+	/**
+	 * Retorna a lista de ECOs presentes nas partidas carregadas, agregando
+	 * a quantidade de partidas e o nome da abertura (quando disponível).
+	 * Ordenado alfabeticamente por código ECO.
+	 */
+	public List<Map<String, Object>> listEcos() {
+		Map<String, EcoInfo> map = new TreeMap<>();
+		for (GameData g : analysisService.getGames()) {
+			String eco = tagOrNull(g, "ECO");
+			if (eco == null) continue;
+			String opening = tagOrNull(g, "Opening");
+			EcoInfo info = map.computeIfAbsent(eco, k -> new EcoInfo(k, opening));
+			info.gameCount++;
+			if (info.openingName == null && opening != null) info.openingName = opening;
+			// Conta blunders já analisados
+			info.blunderCount += countBlunders(g);
+		}
 
-    /**
-     * Retorna lista de puzzles (blunders) para a abertura informada.
-     *
-     * @param eco Código ECO (ex: "B20", "C41")
-     * @return lista de DTOs prontos para a UI
-     */
-    public List<PuzzleDto> findPuzzlesByEco(String eco) {
-        List<LanceEntity> blunders = puzzleRepository.findBlundersByEco(eco.trim());
-        log.info("ECO={} → {} puzzles encontrados", eco, blunders.size());
-        return blunders.stream().map(this::toDto).collect(Collectors.toList());
-    }
+		List<Map<String, Object>> list = new ArrayList<>(map.size());
+		for (EcoInfo info : map.values()) {
+			Map<String, Object> dto = new LinkedHashMap<>();
+			dto.put("eco", info.eco);
+			dto.put("opening", info.openingName != null ? info.openingName : "");
+			dto.put("games", info.gameCount);
+			dto.put("blunders", info.blunderCount);
+			list.add(dto);
+		}
+		return list;
+	}
 
-    // ── Avaliação do Lance do Usuário ────────────────────────────────────────
+	// ── Geração de puzzles ──────────────────────────────────────────
 
-    /**
-     * Avalia o lance do usuário contra o melhor lance registrado no puzzle.
-     * Se o Stockfish estiver disponível, faz uma avaliação real dos dois lances.
-     * Caso contrário, usa a comparação direta com o bestMove armazenado.
-     *
-     * @param req requisição contendo FEN, lance do usuário e melhor lance
-     * @return resposta com avaliação detalhada
-     */
-    public PuzzleEvalResponse evaluateMove(PuzzleEvalRequest req) {
-        String fen       = req.fen();
-        String userMove  = req.userMove()  != null ? req.userMove().toLowerCase().trim()  : "";
-        String bestMove  = req.bestMove()  != null ? req.bestMove().toLowerCase().trim()  : "";
+	/**
+	 * Gera a lista de puzzles para um determinado ECO. Cada puzzle representa
+	 * uma posição em que o jogador da vez cometeu um blunder; o usuário deverá
+	 * encontrar um lance melhor a partir dessa mesma posição.
+	 */
+	public List<Map<String, Object>> getPuzzlesByEco(String eco) {
+		if (eco == null || eco.isBlank()) return List.of();
+		String wanted = eco.trim().toUpperCase();
 
-        // Avaliação via Stockfish (se disponível)
-        if (stockfishPool.isStarted()) {
-            return evaluateWithStockfish(fen, userMove, bestMove);
-        }
+		List<Map<String, Object>> puzzles = new ArrayList<>();
+		int puzzleId = 0;
 
-        // Fallback: comparação direta com o bestMove armazenado
-        return evaluateByComparison(userMove, bestMove);
-    }
+		for (GameData g : analysisService.getGames()) {
+			String gEco = tagOrNull(g, "ECO");
+			if (gEco == null || !gEco.equalsIgnoreCase(wanted)) continue;
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+			List<MoveEntry> moves = g.getMoves();
+			double prevEval = 0.0;       // eval antes do primeiro lance (perspectiva brancas)
+			boolean prevHasEval = true;
 
-    private PuzzleEvalResponse evaluateWithStockfish(String fen, String userMove, String bestMove) {
-        try {
-            // 1. Avalia a posição do melhor lance
-            StockfishResult bestResult = stockfishPool.analyze(fen, PUZZLE_DEPTH);
-            double bestEval = bestResult.eval();
+			for (int i = 0; i < moves.size(); i++) {
+				MoveEntry m = moves.get(i);
+				if (!m.isAnalyzed()) {
+					// Sem análise → não dá pra detectar blunder aqui
+					prevHasEval = false;
+					continue;
+				}
 
-            // 2. Aplica o lance do usuário e avalia a posição resultante
-            String fenAfterUser = applyMoveToFen(fen, userMove);
-            double userEval;
-            List<String> pvAfterBest = bestResult.pv();
+				Double curEvalObj = m.getEval();
+				Integer mateIn = m.getMateIn();
 
-            if (fenAfterUser != null) {
-                StockfishResult userResult = stockfishPool.analyze(fenAfterUser, PUZZLE_DEPTH);
-                // A avaliação do FEN após o lance está na perspectiva do próximo jogador — inverter
-                userEval = -userResult.eval();
-            } else {
-                // Lance inválido
-                return new PuzzleEvalResponse(
-                        false, null, bestEval, null,
-                        userMove, bestMove,
-                        "❌ Lance inválido nessa posição.",
-                        pvAfterBest
-                );
-            }
+				// Avaliação numérica desta posição (após o lance), perspectiva brancas
+				double curEval;
+				if (mateIn != null) {
+					curEval = mateIn > 0 ? 100.0 : -100.0;
+				} else if (curEvalObj != null) {
+					curEval = curEvalObj;
+				} else {
+					prevHasEval = false;
+					continue;
+				}
 
-            double evalDiff = bestEval - userEval;
-            boolean good = evalDiff <= GOOD_MOVE_THRESHOLD;
+				if (prevHasEval) {
+					double drop;
+					if (m.isWhiteTurn()) {
+						// Brancas jogaram: blunder se eval caiu (de positiva pra negativa)
+						drop = prevEval - curEval;
+					} else {
+						// Pretas jogaram: blunder se eval subiu (a favor das brancas)
+						drop = curEval - prevEval;
+					}
 
-            String message = buildMessage(good, evalDiff, userMove, bestMove);
+					if (drop >= BLUNDER_THRESHOLD) {
+						Map<String, Object> dto = new LinkedHashMap<>();
+						dto.put("id", puzzleId++);
+						dto.put("gameIndex", g.getIndex());
+						dto.put("moveIndex", i);
+						dto.put("fen", m.getFenBefore());           // posição p/ resolver
+						dto.put("sideToMove", fenSide(m.getFenBefore()));
+						dto.put("playedUci", m.getUci());
+						dto.put("playedSan", m.getSan());
+						dto.put("bestMove", m.getBestMove());        // melhor lance (UCI)
+						dto.put("evalBefore", round(prevEval));
+						dto.put("evalAfter",  mateIn != null ? null : round(curEval));
+						dto.put("mateInAfter", mateIn);
+						dto.put("drop", round(drop));
+						dto.put("moveNumber", m.getMoveNumber());
+						dto.put("white", g.getTags().getOrDefault("White", "?"));
+						dto.put("black", g.getTags().getOrDefault("Black", "?"));
+						dto.put("eco", gEco);
+						dto.put("opening", g.getTags().getOrDefault("Opening", ""));
+						dto.put("gameTitle", g.getTitle());
+						puzzles.add(dto);
+					}
+				}
 
-            return new PuzzleEvalResponse(
-                    good, userEval, bestEval, evalDiff,
-                    userMove, bestMove,
-                    message,
-                    pvAfterBest
-            );
-        } catch (Exception e) {
-            log.error("Erro ao avaliar lance: {}", e.getMessage(), e);
-            return evaluateByComparison(userMove, bestMove);
-        }
-    }
+				prevEval = curEval;
+				prevHasEval = true;
+			}
+		}
 
-    private PuzzleEvalResponse evaluateByComparison(String userMove, String bestMove) {
-        boolean good = userMove.equalsIgnoreCase(bestMove);
-        String message = good
-                ? "✅ Lance correto! Você encontrou o melhor lance."
-                : "❌ Lance incorreto. O melhor lance era: " + bestMove;
-        return new PuzzleEvalResponse(good, null, null, null, userMove, bestMove, message, List.of());
-    }
+		log.info("Gerados {} puzzle(s) para ECO {}", puzzles.size(), wanted);
+		return puzzles;
+	}
 
-    private String buildMessage(boolean good, double evalDiff, String userMove, String bestMove) {
-        if (good) {
-            if (userMove.equalsIgnoreCase(bestMove)) {
-                return "✅ Excelente! Você encontrou o melhor lance!";
-            }
-            return "✅ Bom lance! A diferença de avaliação é pequena (" + String.format("%.2f", evalDiff) + " peões).";
-        }
-        return "❌ Lance ruim (blunder)! Perdeu " + String.format("%.2f", evalDiff) + " peões. O melhor era: " + bestMove;
-    }
+	// ── Avaliação do lance do usuário ──────────────────────────────
 
-    /**
-     * Aplica um lance UCI a um FEN usando a biblioteca chess.js no servidor.
-     * Como não temos chess.js no backend, usamos o Stockfish para obter o FEN resultante:
-     * enviamos a posição + o lance e pedimos 1 nó de análise para "confirmar" o lance.
-     *
-     * Retorna null se o lance for ilegal.
-     */
-    private String applyMoveToFen(String fen, String uciMove) {
-        try {
-            StockfishResult result = stockfishPool.analyzeWithMove(fen, uciMove, 1);
-            return result != null ? result.fenAfterMove() : null;
-        } catch (Exception e) {
-            log.warn("Não foi possível aplicar lance {} ao FEN {}: {}", uciMove, fen, e.getMessage());
-            return null;
-        }
-    }
+	/**
+	 * Classifica o lance do usuário com base nos parâmetros de avaliação:
+	 *   - delta (perspectiva do jogador) é a queda da avaliação após o lance.
+	 *
+	 *   delta &lt;= 0.20  → "Excelente"
+	 *   delta &lt;= 0.50  → "Bom"
+	 *   delta &lt;= 1.00  → "Imprecisão"
+	 *   delta &lt;= 2.00  → "Erro"
+	 *   delta &gt; 2.00  → "Blunder"
+	 *
+	 *   evalBefore / evalAfter são fornecidos do ponto de vista das brancas.
+	 *   Convertem-se para a perspectiva do lado que jogou.
+	 */
+	public Map<String, Object> classifyMove(double evalBefore, Double evalAfter, Integer mateInAfter,
+			boolean whiteToMove, boolean userMoveEqualsBest) {
 
-    private PuzzleDto toDto(LanceEntity lance) {
-        List<String> pv = lance.getVariantePrincipal() != null
-                ? Arrays.asList(lance.getVariantePrincipal().split(" "))
-                : List.of();
+		Map<String, Object> result = new LinkedHashMap<>();
 
-        String gameTitle = lance.getPartida() != null ? lance.getPartida().titulo() : "Partida desconhecida";
+		// Eval pós-lance, perspectiva do jogador
+		double playerEvalAfter;
+		if (mateInAfter != null) {
+			// Mate detectado após o lance
+			boolean goodForUser = whiteToMove ? mateInAfter > 0 : mateInAfter < 0;
+			playerEvalAfter = goodForUser ? 100.0 : -100.0;
+		} else if (evalAfter != null) {
+			playerEvalAfter = whiteToMove ? evalAfter : -evalAfter;
+		} else {
+			playerEvalAfter = 0.0;
+		}
 
-        return new PuzzleDto(
-                lance.getId(),
-                lance.getFenAntes(),
-                lance.getUci(),
-                lance.getSan(),
-                lance.getMelhorLance(),
-                null,   // evalBefore não armazenado diretamente; poderia ser obtido consultando o lance anterior
-                lance.getEval(),
-                lance.isVezBrancas(),
-                lance.getNumeroLance(),
-                gameTitle,
-                pv
-        );
-    }
+		double playerEvalBefore = whiteToMove ? evalBefore : -evalBefore;
+		double delta = playerEvalBefore - playerEvalAfter;
+
+		String classification;
+		String color;
+		String message;
+		if (userMoveEqualsBest) {
+			classification = "Lance perfeito";
+			color = "good";
+			message = "Você achou o melhor lance segundo o Stockfish!";
+		} else if (delta <= 0.20) {
+			classification = "Excelente";
+			color = "good";
+			message = "Lance praticamente igual ao melhor.";
+		} else if (delta <= 0.50) {
+			classification = "Bom";
+			color = "good";
+			message = "Bom lance — só um pouquinho abaixo do melhor.";
+		} else if (delta <= 1.00) {
+			classification = "Imprecisão";
+			color = "warn";
+			message = "Imprecisão: havia algo um pouco melhor.";
+		} else if (delta <= 2.00) {
+			classification = "Erro";
+			color = "bad";
+			message = "Erro: existia um lance bem melhor.";
+		} else {
+			classification = "Blunder";
+			color = "bad";
+			message = "Blunder! Esse lance compromete bastante a posição.";
+		}
+
+		result.put("classification", classification);
+		result.put("color", color);
+		result.put("message", message);
+		result.put("evalBefore", round(evalBefore));
+		result.put("evalAfter",  mateInAfter != null ? null : round(evalAfter == null ? 0.0 : evalAfter));
+		result.put("mateInAfter", mateInAfter);
+		result.put("delta", round(delta));
+		result.put("isBest", userMoveEqualsBest);
+		return result;
+	}
+
+	// ── Helpers ────────────────────────────────────────────────────
+
+	private int countBlunders(GameData g) {
+		int count = 0;
+		double prevEval = 0.0;
+		boolean prevHas = true;
+		for (MoveEntry m : g.getMoves()) {
+			if (!m.isAnalyzed()) { prevHas = false; continue; }
+			Integer mate = m.getMateIn();
+			Double e = m.getEval();
+			double cur;
+			if (mate != null) cur = mate > 0 ? 100.0 : -100.0;
+			else if (e != null) cur = e;
+			else { prevHas = false; continue; }
+
+			if (prevHas) {
+				double drop = m.isWhiteTurn() ? prevEval - cur : cur - prevEval;
+				if (drop >= BLUNDER_THRESHOLD) count++;
+			}
+			prevEval = cur;
+			prevHas = true;
+		}
+		return count;
+	}
+
+	private static String tagOrNull(GameData g, String key) {
+		String v = g.getTags().get(key);
+		return (v == null || v.isBlank() || "?".equals(v)) ? null : v;
+	}
+
+	private static String fenSide(String fen) {
+		if (fen == null) return "w";
+		String[] parts = fen.split("\\s+");
+		return parts.length > 1 ? parts[1] : "w";
+	}
+
+	private static double round(double v) {
+		return Math.round(v * 100.0) / 100.0;
+	}
+
+	/** Auxiliar interno para agrupar contagem por ECO. */
+	private static class EcoInfo {
+		final String eco;
+		String openingName;
+		int gameCount;
+		int blunderCount;
+		EcoInfo(String eco, String openingName) {
+			this.eco = eco;
+			this.openingName = openingName;
+		}
+	}
 }
