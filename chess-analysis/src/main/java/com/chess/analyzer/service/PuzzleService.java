@@ -3,9 +3,11 @@ package com.chess.analyzer.service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 
 import org.slf4j.Logger;
@@ -45,26 +47,85 @@ public class PuzzleService {
 	 * a quantidade de partidas e o nome da abertura (quando disponível).
 	 * Ordenado alfabeticamente por código ECO.
 	 */
+	/** Delega para {@link #listEcos(String)} sem filtro de jogador. */
 	public List<Map<String, Object>> listEcos() {
+		return listEcos(null);
+	}
+
+	/**
+	 * Lista ECOs com blunders, filtrando opcionalmente pelo jogador que estava
+	 * na vez e cometeu o erro (case-insensitive, substring).
+	 */
+	public List<Map<String, Object>> listEcos(String playerFilter) {
+		boolean hasFilter   = playerFilter != null && !playerFilter.isBlank();
+		String  lowerFilter = hasFilter ? playerFilter.strip().toLowerCase() : null;
+
 		Map<String, EcoInfo> map = new TreeMap<>();
+
 		for (GameData g : analysisService.getGames()) {
 			String eco = tagOrNull(g, "ECO");
 			if (eco == null) continue;
 			String opening = tagOrNull(g, "Opening");
-			EcoInfo info = map.computeIfAbsent(eco, k -> new EcoInfo(k, opening));
-			info.gameCount++;
-			if (info.openingName == null && opening != null) info.openingName = opening;
-			// Conta blunders já analisados
-			info.blunderCount += countBlunders(g);
+			String white   = nvl(g.getTags().get("White"));
+			String black   = nvl(g.getTags().get("Black"));
+
+			double  prevEval = 0.0;
+			boolean prevHas  = true;
+
+			for (MoveEntry m : g.getMoves()) {
+				if (!m.isAnalyzed()) { prevHas = false; continue; }
+				Integer mate = m.getMateIn();
+				Double  e    = m.getEval();
+				double  cur;
+				if      (mate != null) cur = mate > 0 ? 100.0 : -100.0;
+				else if (e    != null) cur = e;
+				else { prevHas = false; continue; }
+
+				if (prevHas) {
+					double drop = m.isWhiteTurn() ? prevEval - cur : cur - prevEval;
+					if (drop >= BLUNDER_THRESHOLD) {
+						String blunderMaker = m.isWhiteTurn() ? white : black;
+
+						// Com filtro ativo: só conta blunders do jogador pesquisado
+						if (hasFilter && !blunderMaker.toLowerCase().contains(lowerFilter)) {
+							prevEval = cur; prevHas = true; continue;
+						}
+
+						EcoInfo info = map.computeIfAbsent(eco, k -> new EcoInfo(k, opening));
+						if (info.openingName == null && opening != null) info.openingName = opening;
+						info.blunderCount++;
+						info.gameIndices.add(g.getIndex()); // deduplicado por Set
+
+						if (!blunderMaker.isEmpty()) {
+							PlayerInfoAgg pa = info.playerStats.computeIfAbsent(
+									blunderMaker, k -> new PlayerInfoAgg());
+							pa.blundersMade++;
+							pa.gameIndices.add(g.getIndex());
+						}
+					}
+				}
+				prevEval = cur;
+				prevHas  = true;
+			}
 		}
 
 		List<Map<String, Object>> list = new ArrayList<>(map.size());
 		for (EcoInfo info : map.values()) {
 			Map<String, Object> dto = new LinkedHashMap<>();
-			dto.put("eco", info.eco);
-			dto.put("opening", info.openingName != null ? info.openingName : "");
-			dto.put("games", info.gameCount);
+			dto.put("eco",      info.eco);
+			dto.put("opening",  info.openingName != null ? info.openingName : "");
+			dto.put("games",    info.gameIndices.size()); // partidas únicas com blunder(s) relevantes
 			dto.put("blunders", info.blunderCount);
+
+			List<Map<String, Object>> playerList = new ArrayList<>();
+			for (Map.Entry<String, PlayerInfoAgg> entry : info.playerStats.entrySet()) {
+				Map<String, Object> ps = new LinkedHashMap<>();
+				ps.put("name",     entry.getKey());
+				ps.put("games",    entry.getValue().gameIndices.size());
+				ps.put("blunders", entry.getValue().blundersMade);
+				playerList.add(ps);
+			}
+			dto.put("playerStats", playerList);
 			list.add(dto);
 		}
 		return list;
@@ -73,13 +134,27 @@ public class PuzzleService {
 	// ── Geração de puzzles ──────────────────────────────────────────
 
 	/**
-	 * Gera a lista de puzzles para um determinado ECO. Cada puzzle representa
-	 * uma posição em que o jogador da vez cometeu um blunder; o usuário deverá
-	 * encontrar um lance melhor a partir dessa mesma posição.
+	 * Gera a lista de puzzles para um determinado ECO.
+	 * Delega para {@link #getPuzzlesByEco(String, String)} sem filtro de jogador.
 	 */
 	public List<Map<String, Object>> getPuzzlesByEco(String eco) {
+		return getPuzzlesByEco(eco, null);
+	}
+
+	/**
+	 * Gera a lista de puzzles para um determinado ECO, filtrando opcionalmente pelo
+	 * jogador que estava na vez e cometeu o blunder.
+	 *
+	 * @param eco          código ECO (ex: "B20"), case-insensitive
+	 * @param playerFilter filtro pelo nome do jogador (case-insensitive, substring);
+	 *                     {@code null} = sem filtro
+	 */
+	public List<Map<String, Object>> getPuzzlesByEco(String eco, String playerFilter) {
 		if (eco == null || eco.isBlank()) return List.of();
 		String wanted = eco.trim().toUpperCase();
+
+		boolean hasFilter   = playerFilter != null && !playerFilter.isBlank();
+		String  lowerFilter = hasFilter ? playerFilter.strip().toLowerCase() : null;
 
 		List<Map<String, Object>> puzzles = new ArrayList<>();
 		int puzzleId = 0;
@@ -87,6 +162,9 @@ public class PuzzleService {
 		for (GameData g : analysisService.getGames()) {
 			String gEco = tagOrNull(g, "ECO");
 			if (gEco == null || !gEco.equalsIgnoreCase(wanted)) continue;
+
+			String white = nvl(g.getTags().get("White"));
+			String black = nvl(g.getTags().get("Black"));
 
 			List<MoveEntry> moves = g.getMoves();
 			double prevEval = 0.0;       // eval antes do primeiro lance (perspectiva brancas)
@@ -125,6 +203,16 @@ public class PuzzleService {
 					}
 
 					if (drop >= BLUNDER_THRESHOLD) {
+						// Aplica filtro por jogador: só inclui blunders do jogador pesquisado
+						if (hasFilter) {
+							String blunderMaker = m.isWhiteTurn() ? white : black;
+							if (!blunderMaker.toLowerCase().contains(lowerFilter)) {
+								prevEval = curEval;
+								prevHasEval = true;
+								continue;
+							}
+						}
+
 						Map<String, Object> dto = new LinkedHashMap<>();
 						dto.put("id", puzzleId++);
 						dto.put("gameIndex", g.getIndex());
@@ -139,11 +227,15 @@ public class PuzzleService {
 						dto.put("mateInAfter", mateIn);
 						dto.put("drop", round(drop));
 						dto.put("moveNumber", m.getMoveNumber());
-						dto.put("white", g.getTags().getOrDefault("White", "?"));
-						dto.put("black", g.getTags().getOrDefault("Black", "?"));
-						dto.put("eco", gEco);
-						dto.put("opening", g.getTags().getOrDefault("Opening", ""));
-						dto.put("gameTitle", g.getTitle());
+						dto.put("white",    g.getTags().getOrDefault("White",   "?"));
+						dto.put("black",    g.getTags().getOrDefault("Black",   "?"));
+						dto.put("eco",      gEco);
+						dto.put("opening",  g.getTags().getOrDefault("Opening", ""));
+						dto.put("gameTitle",g.getTitle());
+						dto.put("date",     nvl(g.getTags().get("Date")));
+						dto.put("whiteElo", nvl(g.getTags().get("WhiteElo")));
+						dto.put("blackElo", nvl(g.getTags().get("BlackElo")));
+						dto.put("site",     nvl(g.getTags().get("Site")));
 						puzzles.add(dto);
 					}
 				}
@@ -276,11 +368,26 @@ public class PuzzleService {
 	private static class EcoInfo {
 		final String eco;
 		String openingName;
-		int gameCount;
+		/** Índices únicos de partidas que têm ao menos um blunder relevante neste ECO. */
+		final Set<Integer> gameIndices = new LinkedHashSet<>();
 		int blunderCount;
+		/** Estatísticas por jogador para este ECO. */
+		final Map<String, PlayerInfoAgg> playerStats = new LinkedHashMap<>();
+
 		EcoInfo(String eco, String openingName) {
 			this.eco = eco;
 			this.openingName = openingName;
 		}
+	}
+
+	/** Agrega, por jogador, índices de partidas e blunders cometidos. */
+	private static class PlayerInfoAgg {
+		final Set<Integer> gameIndices = new LinkedHashSet<>();
+		int blundersMade;
+	}
+
+	/** Retorna string vazia para valores nulos, em branco ou "?". */
+	private static String nvl(String v) {
+		return (v == null || v.isBlank() || "?".equals(v.trim())) ? "" : v.trim();
 	}
 }

@@ -43,35 +43,61 @@ public class PuzzleDbService {
     // ── ECOs disponíveis no banco ──────────────────────────────────────────
 
     /**
-     * Lista os ECOs que possuem lances {@code blunder=true} e {@code analisado=true}
-     * no banco de dados, ordenados alfabeticamente pelo código ECO.
-     *
-     * <p>Carrega todos os lances blunder via JPQL e agrega por ECO em Java.
-     * Cada ECO retorna: {@code eco}, {@code opening}, {@code games}, {@code blunders}.</p>
+     * Lista os ECOs que possuem lances {@code blunder=true} no banco de dados.
+     * Delega para {@link #listEcos(String)} sem filtro de jogador.
      */
     public List<Map<String, Object>> listEcos() {
-        List<LanceEntity> blunders = puzzleRepository.findAllBlundersWithPartida();
-        log.info("listEcos() → {} lance(s) blunder encontrado(s) no banco", blunders.size());
+        return listEcos(null);
+    }
 
-        // Agrega por ECO em Java
+    /**
+     * Lista os ECOs que possuem blunders, opcionalmente filtrando pelo jogador
+     * que estava na vez e cometeu o erro.
+     *
+     * <p>Quando {@code playerFilter} é fornecido (não nulo/em branco), apenas
+     * os lances em que o nome do jogador (case-insensitive, substring) corresponde
+     * ao filtro são contabilizados. ECOs sem nenhum blunder do jogador filtrado
+     * são omitidos do resultado.</p>
+     *
+     * @param playerFilter nome (ou parte do nome) do jogador a filtrar; {@code null} = sem filtro
+     */
+    public List<Map<String, Object>> listEcos(String playerFilter) {
+        List<LanceEntity> blunders = puzzleRepository.findAllBlundersWithPartida();
+        log.info("listEcos(player='{}') → {} lance(s) blunder no banco", playerFilter, blunders.size());
+
+        boolean hasFilter  = playerFilter != null && !playerFilter.isBlank();
+        String  lowerFilter = hasFilter ? playerFilter.strip().toLowerCase() : null;
+
         Map<String, EcoAgg> byEco = new TreeMap<>();
 
         for (LanceEntity lance : blunders) {
             PartidaEntity partida = lance.getPartida();
             String eco = partida.getEco();
-
-            // Filtra ECOs nulos/vazios/'?'
             if (eco == null || eco.isBlank() || "?".equals(eco.trim())) continue;
+
+            // ── Identifica quem estava na vez e cometeu o blunder ──────────
+            String white        = nvl(partida.getWhite());
+            String black        = nvl(partida.getBlack());
+            String blunderMaker = lance.isVezBrancas() ? white : black;
+
+            // Se há filtro, pula lances cujo jogador não corresponde
+            if (hasFilter && !blunderMaker.toLowerCase().contains(lowerFilter)) continue;
 
             EcoAgg agg = byEco.computeIfAbsent(eco, k -> new EcoAgg(eco));
             agg.gameIds.add(partida.getId());
             agg.blunderCount++;
 
-            // Guarda o primeiro nome de abertura não-vazio encontrado
             if (agg.openingName == null && partida.getOpening() != null
                     && !partida.getOpening().isBlank()
                     && !"?".equals(partida.getOpening().trim())) {
                 agg.openingName = partida.getOpening();
+            }
+
+            // Estatísticas por jogador (sempre acumuladas para uso futuro)
+            if (!blunderMaker.isEmpty()) {
+                PlayerAgg pa = agg.playerStats.computeIfAbsent(blunderMaker, k -> new PlayerAgg());
+                pa.blundersMade++;
+                pa.gameIds.add(partida.getId());
             }
         }
 
@@ -82,10 +108,20 @@ public class PuzzleDbService {
             dto.put("opening",  agg.openingName != null ? agg.openingName : "");
             dto.put("games",    (long) agg.gameIds.size());
             dto.put("blunders", agg.blunderCount);
+
+            List<Map<String, Object>> playerList = new ArrayList<>();
+            for (Map.Entry<String, PlayerAgg> entry : agg.playerStats.entrySet()) {
+                Map<String, Object> ps = new LinkedHashMap<>();
+                ps.put("name",     entry.getKey());
+                ps.put("games",    (long) entry.getValue().gameIds.size());
+                ps.put("blunders", entry.getValue().blundersMade);
+                playerList.add(ps);
+            }
+            dto.put("playerStats", playerList);
             result.add(dto);
         }
 
-        log.info("listEcos() → {} ECO(s) com blunders", result.size());
+        log.info("listEcos(player='{}') → {} ECO(s)", playerFilter, result.size());
         return result;
     }
 
@@ -106,26 +142,51 @@ public class PuzzleDbService {
     /**
      * Gera a lista de puzzles para o ECO informado a partir dos lances
      * marcados como {@code blunder=true} no banco de dados.
+     * Delega para {@link #getPuzzlesByEco(String, String)} sem filtro de jogador.
+     *
+     * @param eco código ECO (ex: "B20"), case-insensitive
+     */
+    public List<Map<String, Object>> getPuzzlesByEco(String eco) {
+        return getPuzzlesByEco(eco, null);
+    }
+
+    /**
+     * Gera a lista de puzzles para o ECO informado, filtrando opcionalmente pelo
+     * jogador que estava na vez e cometeu o blunder.
      *
      * <p>Para cada lance blunder, a avaliação <em>antes</em> do blunder
      * ({@code evalBefore}) é obtida consultando o lance imediatamente anterior
      * na mesma partida. Se não houver lance anterior ou ele não estiver
      * analisado, usa {@code 0.0} como referência.</p>
      *
-     * @param eco código ECO (ex: "B20"), case-insensitive
+     * @param eco          código ECO (ex: "B20"), case-insensitive
+     * @param playerFilter filtro pelo nome do jogador que cometeu o blunder
+     *                     (case-insensitive, substring); {@code null} = sem filtro
      * @return lista de Maps compatível com o formato esperado pela UI de puzzles
      */
-    public List<Map<String, Object>> getPuzzlesByEco(String eco) {
+    public List<Map<String, Object>> getPuzzlesByEco(String eco, String playerFilter) {
         if (eco == null || eco.isBlank()) return List.of();
 
         List<LanceEntity> blunders = puzzleRepository.findBlundersByEco(eco.trim());
-        log.info("getPuzzlesByEco({}) → {} blunder(s) encontrado(s)", eco, blunders.size());
+        log.info("getPuzzlesByEco({}, player='{}') → {} blunder(s) encontrado(s)",
+                eco, playerFilter, blunders.size());
+
+        boolean hasFilter   = playerFilter != null && !playerFilter.isBlank();
+        String  lowerFilter = hasFilter ? playerFilter.strip().toLowerCase() : null;
 
         List<Map<String, Object>> puzzles = new ArrayList<>(blunders.size());
         int puzzleId = 0;
 
         for (LanceEntity lance : blunders) {
             PartidaEntity partida = lance.getPartida();
+
+            // Aplica filtro por jogador: verifica quem estava na vez do blunder
+            if (hasFilter) {
+                String white        = nvl(partida.getWhite());
+                String black        = nvl(partida.getBlack());
+                String blunderMaker = lance.isVezBrancas() ? white : black;
+                if (!blunderMaker.toLowerCase().contains(lowerFilter)) continue;
+            }
 
             // Avaliação antes do blunder (perspectiva brancas)
             double evalBefore = resolveEvalBefore(partida.getId(), lance.getOrdem());
@@ -161,6 +222,10 @@ public class PuzzleDbService {
             dto.put("opening",     nvl(partida.getOpening()));
             dto.put("gameTitle",   partida.titulo());
             dto.put("gameId",      partida.getGameId());
+            dto.put("date",        partida.getDate() != null ? partida.getDate().toString() : null);
+            dto.put("whiteElo",    partida.getWhiteElo());
+            dto.put("blackElo",    partida.getBlackElo());
+            dto.put("site",        nvl(partida.getSite()));
             puzzles.add(dto);
         }
 
@@ -201,15 +266,25 @@ public class PuzzleDbService {
         return (v == null || v.isBlank() || "?".equals(v.trim())) ? "" : v;
     }
 
+    // ── Classes internas de agregação ─────────────────────────────────────────
+
     /** Estrutura interna para agregar dados de um ECO durante o processamento. */
     private static class EcoAgg {
         final String eco;
         String openingName;
         final Set<Long> gameIds = new LinkedHashSet<>();
         long blunderCount;
+        /** Estatísticas por jogador: nome → {games, blunders cometidos} */
+        final Map<String, PlayerAgg> playerStats = new LinkedHashMap<>();
 
-        EcoAgg(String eco) {
-            this.eco = eco;
-        }
+        EcoAgg(String eco) { this.eco = eco; }
+    }
+
+    /** Agrega, por jogador, as partidas em que apareceu e os blunders que cometeu. */
+    private static class PlayerAgg {
+        /** IDs das partidas em que este jogador apareceu (como brancas ou pretas). */
+        final Set<Long> gameIds = new LinkedHashSet<>();
+        /** Quantidade de blunders cometidos pelo jogador neste ECO. */
+        int blundersMade;
     }
 }

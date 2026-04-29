@@ -1,6 +1,7 @@
 package com.chess.analyzer.controller;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -92,14 +93,22 @@ public class PuzzleController {
 	 * sessão atual, quando o banco não possui dados analisados.
 	 * </p>
 	 */
+	/**
+	 * Lista ECOs com blunders.
+	 *
+	 * @param player filtro opcional pelo nome do jogador que cometeu o blunder
+	 *               (case-insensitive, substring). Quando omitido, retorna todos os ECOs.
+	 */
 	@GetMapping("/api/puzzles/ecos")
 	@ResponseBody
-	public List<Map<String, Object>> listEcos() {
+	public List<Map<String, Object>> listEcos(
+			@RequestParam(required = false) String player) {
+
 		// 1. Banco de dados (fonte primária)
 		try {
-			List<Map<String, Object>> dbEcos = puzzleDbService.listEcos();
+			List<Map<String, Object>> dbEcos = puzzleDbService.listEcos(player);
 			if (!dbEcos.isEmpty()) {
-				log.info("listEcos() → {} ECO(s) do banco de dados", dbEcos.size());
+				log.info("listEcos(player='{}') → {} ECO(s) do banco de dados", player, dbEcos.size());
 				return dbEcos;
 			}
 		} catch (Exception e) {
@@ -107,8 +116,8 @@ public class PuzzleController {
 		}
 
 		// 2. Memória — PGN carregado na sessão atual (fallback)
-		List<Map<String, Object>> memEcos = puzzleService.listEcos();
-		log.info("listEcos() → {} ECO(s) da memória (fallback)", memEcos.size());
+		List<Map<String, Object>> memEcos = puzzleService.listEcos(player);
+		log.info("listEcos(player='{}') → {} ECO(s) da memória (fallback)", player, memEcos.size());
 		return memEcos;
 	}
 
@@ -123,13 +132,15 @@ public class PuzzleController {
 	 */
 	@GetMapping("/api/puzzles")
 	@ResponseBody
-	public ResponseEntity<?> getPuzzles(@RequestParam String eco) {
+	public ResponseEntity<?> getPuzzles(
+			@RequestParam String eco,
+			@RequestParam(required = false) String player) {
 
 		// 1. Banco de dados (fonte primária)
 		try {
-			List<Map<String, Object>> dbPuzzles = puzzleDbService.getPuzzlesByEco(eco);
+			List<Map<String, Object>> dbPuzzles = puzzleDbService.getPuzzlesByEco(eco, player);
 			if (!dbPuzzles.isEmpty()) {
-				log.info("getPuzzles({}) → {} puzzle(s) do banco de dados", eco, dbPuzzles.size());
+				log.info("getPuzzles({}, player='{}') → {} puzzle(s) do banco de dados", eco, player, dbPuzzles.size());
 				return ResponseEntity
 						.ok(Map.of("ok", true, "eco", eco, "count", dbPuzzles.size(), "puzzles", dbPuzzles));
 			}
@@ -139,8 +150,8 @@ public class PuzzleController {
 
 		// 2. Memória — fallback para partidas carregadas via PGN na sessão
 		if (!analysisService.getGames().isEmpty()) {
-			List<Map<String, Object>> memPuzzles = puzzleService.getPuzzlesByEco(eco);
-			log.info("getPuzzles({}) → {} puzzle(s) da memória (fallback)", eco, memPuzzles.size());
+			List<Map<String, Object>> memPuzzles = puzzleService.getPuzzlesByEco(eco, player);
+			log.info("getPuzzles({}, player='{}') → {} puzzle(s) da memória (fallback)", eco, player, memPuzzles.size());
 			return ResponseEntity.ok(Map.of("ok", true, "eco", eco, "count", memPuzzles.size(), "puzzles", memPuzzles));
 		}
 
@@ -180,11 +191,11 @@ public class PuzzleController {
 			return ResponseEntity.badRequest().body(Map.of("ok", false, "message", mv.message()));
 		}
 
-		// 2. Analisa a nova posição com o Stockfish
+		// 2. Analisa a nova posição com o Stockfish (MultiPV: 4 variantes)
 		int depth = req.depth() == null || req.depth() <= 0 ? analysisService.getAnalysisDepth() : req.depth();
 		StockfishResult sf;
 		try {
-			sf = stockfish.analyze(mv.fen(), depth);
+			sf = stockfish.analyzeMultiPV(mv.fen(), depth, 4);
 		} catch (Exception e) {
 			log.error("Erro Stockfish: {}", e.getMessage(), e);
 			return ResponseEntity.internalServerError()
@@ -201,11 +212,19 @@ public class PuzzleController {
 				req.evalBefore() == null ? 0.0 : req.evalBefore(), sf.mateIn() != null ? null : sf.eval(), sf.mateIn(),
 				whiteToMove, isBest);
 
-		// 4. Resposta
-		return ResponseEntity.ok(Map.of("ok", true, "playedFen", mv.fen(), "playedSan", mv.san(), "playedUci", userUci,
-				"check", mv.check(), "checkmate", mv.checkmate(), "stockfishBestMove",
-				sf.bestMove() == null ? "" : sf.bestMove(), "stockfishPv",
-				sf.pv() == null ? List.of() : sf.pv().stream().limit(5).toList(), "classification", classification));
+		// 4. Resposta com MultiPV (usa LinkedHashMap para suportar todos os campos sem limite)
+		Map<String, Object> resp = new LinkedHashMap<>();
+		resp.put("ok",                  true);
+		resp.put("playedFen",           mv.fen());
+		resp.put("playedSan",           mv.san());
+		resp.put("playedUci",           userUci);
+		resp.put("check",               mv.check());
+		resp.put("checkmate",           mv.checkmate());
+		resp.put("stockfishBestMove",   sf.bestMove() == null ? "" : sf.bestMove());
+		resp.put("stockfishPv",         sf.pv() == null ? List.of() : sf.pv().stream().limit(5).toList());
+		resp.put("classification",      classification);
+		resp.put("pvLines",             sf.pvLines() == null ? List.of() : sf.pvLines());
+		return ResponseEntity.ok(resp);
 	}
 
 	/** Payload do {@code POST /api/puzzles/evaluate}. */

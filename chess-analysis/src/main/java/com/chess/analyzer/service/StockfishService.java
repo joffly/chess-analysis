@@ -8,7 +8,10 @@ import org.springframework.stereotype.Service;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Gerencia um processo Stockfish persistente via protocolo UCI.
@@ -79,6 +82,38 @@ public class StockfishService implements Closeable {
     }
 
     /**
+     * Analisa uma posição com múltiplas linhas PV (MultiPV).
+     * As avaliações retornadas são sempre da perspectiva das Brancas.
+     * O modo MultiPV é revertido para 1 ao término.
+     *
+     * @param fen   FEN da posição a analisar
+     * @param depth profundidade de busca
+     * @param numPV número de linhas PV a calcular (ex: 4)
+     */
+    public synchronized StockfishResult analyzeMultiPV(String fen, int depth, int numPV) throws IOException {
+        ensureReady();
+        send("setoption name MultiPV value " + numPV);
+        send("isready");
+        waitFor("readyok", 5_000);
+
+        send("position fen " + fen);
+        send("go depth " + depth);
+
+        StockfishResult result;
+        try {
+            result = collectResultMultiPV(fen, numPV);
+        } finally {
+            // Restaura MultiPV para 1 independente de erro
+            try {
+                send("setoption name MultiPV value 1");
+            } catch (IOException ignored) {}
+        }
+
+        log.debug("analyzeMultiPV FEN={} numPV={} → {}", fen, numPV, result);
+        return result;
+    }
+
+    /**
      * Interrompe a busca em andamento (cancela a análise corrente).
      */
     public synchronized void stop() {
@@ -127,6 +162,77 @@ public class StockfishService implements Closeable {
     }
 
     /**
+     * Lê linhas "info" em modo MultiPV, rastreando a última linha por índice PV,
+     * e retorna um {@link StockfishResult} com todas as linhas PV preenchidas.
+     */
+    private StockfishResult collectResultMultiPV(String fen, int numPV) throws IOException {
+        // Chave: índice multipv (1-based); Valor: última linha info recebida para esse índice
+        Map<Integer, String> lastInfoPerPv = new LinkedHashMap<>();
+        String bestMoveLine = null;
+        String line;
+
+        while ((line = reader.readLine()) != null) {
+            log.trace("← SF: {}", line);
+            if (line.startsWith("info") && line.contains("score")) {
+                int pvIdx = extractMultiPvIndex(line);
+                lastInfoPerPv.put(pvIdx, line);
+            }
+            if (line.startsWith("bestmove")) {
+                bestMoveLine = line;
+                break;
+            }
+        }
+        if (bestMoveLine == null) {
+            throw new IOException("Stream do Stockfish encerrada sem 'bestmove' (MultiPV)");
+        }
+
+        // Resultado principal a partir da PV 1
+        String mainInfoLine = lastInfoPerPv.get(1);
+        StockfishResult main = parseResult(mainInfoLine, bestMoveLine, fen);
+
+        // Verifica perspectiva (para normalização)
+        boolean blackToMove = fen.split("\\s+").length > 1 && "b".equals(fen.split("\\s+")[1]);
+
+        // Constrói lista de PvLine (ordenada por índice)
+        List<StockfishResult.PvLine> pvLines = new ArrayList<>();
+        for (Map.Entry<Integer, String> entry : new TreeMap<>(lastInfoPerPv).entrySet()) {
+            int pvIdx    = entry.getKey();
+            String info  = entry.getValue();
+            if (info == null) continue;
+
+            String[]     tokens    = info.split("\\s+");
+            double       lineEval  = 0.0;
+            Integer      lineMate  = null;
+            List<String> lineMoves = new ArrayList<>();
+
+            for (int i = 0; i < tokens.length; i++) {
+                switch (tokens[i]) {
+                    case "cp"   -> lineEval  = safeInt(tokens, i + 1) / 100.0;
+                    case "mate" -> lineMate  = safeInt(tokens, i + 1);
+                    case "pv"   -> lineMoves = new ArrayList<>(
+                                       Arrays.asList(tokens).subList(i + 1, tokens.length));
+                }
+            }
+
+            // Normaliza para perspectiva Brancas
+            if (blackToMove) {
+                lineEval = -lineEval;
+                if (lineMate != null) lineMate = -lineMate;
+            }
+
+            pvLines.add(new StockfishResult.PvLine(
+                pvIdx,
+                lineMate != null ? null : lineEval,   // eval nulo quando há mate
+                lineMate,
+                List.copyOf(lineMoves)
+            ));
+        }
+
+        return new StockfishResult(
+            main.eval(), main.mateIn(), main.bestMove(), main.pv(), null, List.copyOf(pvLines));
+    }
+
+    /**
      * Converte a linha "info" e a linha "bestmove" em {@link StockfishResult}.
      *
      * Formato info:
@@ -168,6 +274,17 @@ public class StockfishService implements Closeable {
         }
 
         return new StockfishResult(eval, mateIn, bestMove, List.copyOf(pv));
+    }
+
+    /** Extrai o índice {@code multipv N} de uma linha info; retorna 1 se ausente. */
+    private int extractMultiPvIndex(String infoLine) {
+        String[] tokens = infoLine.split("\\s+");
+        for (int i = 0; i < tokens.length - 1; i++) {
+            if ("multipv".equals(tokens[i])) {
+                try { return Integer.parseInt(tokens[i + 1]); } catch (Exception ignored) {}
+            }
+        }
+        return 1;
     }
 
     private int safeInt(String[] tokens, int idx) {

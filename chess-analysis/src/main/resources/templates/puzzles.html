@@ -71,21 +71,26 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 #right{width:320px;min-width:260px;background:var(--panel);
   border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 
-#feedback-box{padding:14px;border-bottom:1px solid var(--border);min-height:120px}
+#feedback-box{padding:14px;border-bottom:1px solid var(--border);min-height:120px;
+  overflow-y:auto;max-height:340px}
 .fb-title{font-size:11px;font-weight:600;text-transform:uppercase;
   color:var(--muted);margin-bottom:6px}
 #fb-class{font-size:18px;font-weight:700;margin-bottom:6px}
 #fb-msg{font-size:13px;color:var(--text);margin-bottom:8px}
-#fb-detail{font-size:12px;color:var(--muted);font-family:monospace;line-height:1.5}
+#fb-detail{font-size:12px;color:var(--muted);font-family:monospace;line-height:1.7}
 .fb-good{color:var(--green)}
 .fb-warn{color:var(--yellow)}
 .fb-bad{color:var(--red)}
 
+/* PV line */
+.pv-line{font-size:12px;color:var(--muted);margin-top:4px;word-break:break-word;
+  letter-spacing:.03em}
+
 #orig-box{padding:14px;border-bottom:1px solid var(--border)}
 #orig-box .ol{color:var(--muted);font-size:11px;text-transform:uppercase;
   font-weight:600;margin-bottom:4px}
-#orig-played{font-family:monospace;font-size:13px}
-#orig-best{font-family:monospace;font-size:13px;color:var(--green)}
+#orig-played{font-family:monospace;font-size:14px}
+#orig-best{font-family:monospace;font-size:14px;color:var(--green)}
 
 #counter-box{padding:14px;text-align:center}
 #counter{font-size:18px;font-weight:700;color:var(--accent)}
@@ -94,6 +99,7 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 /* Form controls */
 .fc{background:var(--card);border:1px solid var(--border);color:var(--text);
   border-radius:6px;padding:5px 8px;width:100%;font-size:13px}
+.fc::placeholder{color:var(--muted)}
 .btn-p{background:var(--accent);color:#000;font-weight:700;border:none;
   border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;transition:opacity .12s}
 .btn-p:hover{opacity:.85}
@@ -126,6 +132,10 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 
+/* Link da partida */
+#game-meta a{color:var(--accent);text-decoration:none}
+#game-meta a:hover{text-decoration:underline}
+
 /* Header bar */
 #topbar{padding:8px 14px;border-bottom:1px solid var(--border);
   background:var(--panel);display:flex;align-items:center;gap:10px}
@@ -135,6 +145,17 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 #empty-state{text-align:center;color:var(--muted);font-size:13px;padding:24px}
 
 #sf-status-mini{font-size:11px;color:var(--muted)}
+
+/* Filtro de jogador */
+#player-filter-wrap{margin-top:6px;margin-bottom:4px;position:relative}
+#player-filter-wrap .bi{position:absolute;left:8px;top:50%;transform:translateY(-50%);
+  color:var(--muted);font-size:12px;pointer-events:none}
+#player-filter{padding-left:24px}
+#filter-clear{position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;
+  display:none;line-height:1}
+#filter-clear.show{display:block}
+#filter-info{font-size:10px;color:var(--accent);margin-top:3px;min-height:14px}
 </style>
 </head>
 <body>
@@ -168,7 +189,18 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
           <i class="bi bi-arrow-clockwise"></i> Atualizar
         </button>
       </div>
-      <div id="sf-status-mini">—</div>
+
+      <!-- Filtro por jogador -->
+      <div id="player-filter-wrap">
+        <i class="bi bi-search"></i>
+        <input type="text" id="player-filter" class="fc"
+               placeholder="Filtrar por jogador..."
+               oninput="applyPlayerFilter()" autocomplete="off"/>
+        <button id="filter-clear" onclick="clearPlayerFilter()" title="Limpar filtro">✕</button>
+      </div>
+      <div id="filter-info"></div>
+
+      <div id="sf-status-mini" style="margin-top:4px">—</div>
     </div>
 
     <div id="eco-list">
@@ -221,6 +253,8 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
       <div id="fb-class" style="color:var(--muted)">—</div>
       <div id="fb-msg" style="color:var(--muted)">Faça um lance para ver a avaliação do Stockfish.</div>
       <div id="fb-detail"></div>
+      <div id="game-meta" style="display:none;margin-top:10px;padding-top:8px;
+        border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.6"></div>
     </div>
 
     <div id="orig-box">
@@ -240,24 +274,88 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+<!-- chess.js para conversão UCI → SAN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 
 <script>
 'use strict';
 
 const PIECE_THEME = '/img/chesspieces/wikipedia/{piece}.png';
 
-let board       = null;
-let puzzles     = [];      // lista atual
-let currentEco  = null;
-let currentIdx  = 0;
-let currentPuzzle = null;  // o puzzle ativo
-let currentFen  = null;    // FEN exibido (pode ser modificado após o lance)
-let solved      = false;   // já foi resolvido / avaliado
-let pendingFrom = null;
-let legalTargets = [];
-let flipped = false;
+// ── Figurinas Unicode ────────────────────────────────────────────────────────
+const FIG_W = { K:'♔', Q:'♕', R:'♖', B:'♗', N:'♘' };
+const FIG_B = { K:'♚', Q:'♛', R:'♜', B:'♝', N:'♞' };
 
-// ── Setup ───────────────────────────────────────────────
+/**
+ * Converte um lance UCI (ex: "g1f3") em SAN (ex: "Nf3") para um FEN dado.
+ * Retorna o próprio UCI como fallback em caso de erro.
+ */
+function uciToSan(fen, uci) {
+  if (!uci || uci.length < 4) return uci || '';
+  try {
+    const chess = new Chess(fen);
+    const from  = uci.substring(0, 2);
+    const to    = uci.substring(2, 4);
+    const promo = uci.length > 4 ? uci[4] : undefined;
+    const mv    = chess.move({ from, to, promotion: promo });
+    return mv ? mv.san : uci;
+  } catch(e) { return uci; }
+}
+
+/**
+ * Substitui a letra de peça no início de um SAN pela figurina Unicode.
+ * side: 'w' (brancas) ou 'b' (pretas).
+ * Também substitui a peça de promoção: "e8=Q" → "e8=♕".
+ */
+function sanFig(san, side) {
+  if (!san) return '';
+  const fig = side === 'b' ? FIG_B : FIG_W;
+  // Letra de peça no início (ex: "Nf3", "Qd5")
+  let s = san.replace(/^([KQRBN])/, m => fig[m] || m);
+  // Promoção (ex: "e8=Q")
+  s = s.replace(/=([QRBN])/, (_, p) => '=' + (fig[p] || p));
+  return s;
+}
+
+/**
+ * Converte uma linha PV (array de UCI) em string de figurinas-SAN.
+ * Aplica os lances sequencialmente para obter o SAN correto.
+ * maxMoves: limite de lances a exibir (default 5).
+ */
+function pvToFigSan(fen, pvUci, maxMoves) {
+  if (!pvUci || pvUci.length === 0 || typeof Chess === 'undefined') return '';
+  const max = maxMoves || 5;
+  try {
+    const chess = new Chess(fen);
+    const parts = [];
+    for (let i = 0; i < Math.min(pvUci.length, max); i++) {
+      const uci   = pvUci[i];
+      const from  = uci.substring(0, 2);
+      const to    = uci.substring(2, 4);
+      const promo = uci.length > 4 ? uci[4] : undefined;
+      const mv    = chess.move({ from, to, promotion: promo });
+      if (!mv) break;
+      parts.push(sanFig(mv.san, mv.color));
+    }
+    return parts.join('  ');
+  } catch(e) { return ''; }
+}
+
+// ── Estado global ────────────────────────────────────────────────────────────
+let board         = null;
+let puzzles       = [];
+let currentEco    = null;
+let currentIdx    = 0;
+let currentPuzzle = null;
+let currentFen    = null;
+let solved        = false;
+let pendingFrom   = null;
+let legalTargets  = [];
+let flipped       = false;
+let allEcoData    = [];         // snapshot sem filtro, para restaurar ao limpar
+let playerFilterTimer = null;   // debounce handle
+
+// ── Setup ────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initBoard();
   loadEcos();
@@ -278,27 +376,55 @@ function initBoard() {
   });
 }
 
+// ── Melhoria 2: Status Stockfish neutro quando não conectado ─────────────────
 function refreshSfStatus() {
-  fetch('/api/stockfish/status').then(r => r.json()).then(d => {
-    const el = document.getElementById('sf-status-mini');
-    if (d.ready) {
-      el.textContent = `✓ Stockfish pronto · depth ${d.depth}`;
-      el.style.color = 'var(--green)';
-    } else {
-      el.textContent = '✗ Stockfish não conectado — abra /';
-      el.style.color = 'var(--red)';
-    }
-  });
+  const el = document.getElementById('sf-status-mini');
+  fetch('/api/stockfish/status')
+    .then(r => r.json())
+    .then(d => {
+      if (d.ready) {
+        el.textContent = `✓ Stockfish pronto · depth ${d.depth}`;
+        el.style.color = 'var(--green)';
+      } else {
+        el.textContent = '⏸ Aguardando lance';
+        el.style.color = 'var(--muted)';
+      }
+    })
+    .catch(() => {
+      el.textContent = '⏸ Aguardando lance';
+      el.style.color = 'var(--muted)';
+    });
 }
 
-// ── Sidebar: ECOs ───────────────────────────────────────
+// ── Sidebar: ECOs ────────────────────────────────────────────────────────────
 async function loadEcos() {
+  // Preserva o filtro ativo ao atualizar
+  const filterValue = (document.getElementById('player-filter')?.value || '').trim();
+  await fetchEcos(filterValue, /*storeAsBase=*/ !filterValue);
+}
+
+/**
+ * Busca ECOs no servidor, aplicando o filtro de jogador se fornecido.
+ * storeAsBase=true: salva o resultado em allEcoData (snapshot sem filtro).
+ */
+async function fetchEcos(player, storeAsBase) {
   const el = document.getElementById('eco-list');
   el.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px">Carregando...</div>';
+
+  const url = player
+    ? `/api/puzzles/ecos?player=${encodeURIComponent(player)}`
+    : '/api/puzzles/ecos';
+
   try {
-    const res = await fetch('/api/puzzles/ecos');
+    const res  = await fetch(url);
     const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) {
+    const list = Array.isArray(data) ? data : [];
+
+    if (storeAsBase) allEcoData = list;   // snapshot completo sem filtro
+
+    updateFilterInfo(player, list);
+
+    if (list.length === 0 && !player) {
       el.innerHTML = `
         <div id="empty-state">
           Nenhuma abertura com blunder encontrada.<br><br>
@@ -309,26 +435,68 @@ async function loadEcos() {
         </div>`;
       return;
     }
-    el.innerHTML = '';
-    data.forEach(it => {
-      const div = document.createElement('div');
-      div.className = 'ei';
-      div.id = `eco-${it.eco}`;
-      div.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">
-          <span class="ei-eco">${esc(it.eco)}</span>
-          <span class="ei-name">${esc(it.opening || '(sem nome)')}</span>
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
-          <span class="ei-meta">${it.games} partida${it.games !== 1 ? 's' : ''}</span>
-          ${it.blunders > 0 ? `<span class="ei-blunder">${it.blunders} blunder${it.blunders !== 1 ? 's' : ''}</span>` : '<span class="ei-meta">—</span>'}
-        </div>`;
-      div.onclick = () => selectEco(it.eco);
-      el.appendChild(div);
-    });
-  } catch (e) {
+    renderEcoList(list);
+  } catch(e) {
     el.innerHTML = `<div style="padding:14px;color:var(--red);font-size:12px">Erro ao carregar ECOs.</div>`;
   }
+}
+
+// ── Melhoria 4: Filtro de jogadores — chama o backend ───────────────────────
+function applyPlayerFilter() {
+  const rawValue = document.getElementById('player-filter')?.value || '';
+  const player   = rawValue.trim();
+  const clearBtn = document.getElementById('filter-clear');
+  if (clearBtn) clearBtn.classList.toggle('show', player.length > 0);
+
+  clearTimeout(playerFilterTimer);
+  playerFilterTimer = setTimeout(() => {
+    fetchEcos(player, /*storeAsBase=*/ false);
+  }, 300);  // debounce: aguarda 300ms sem digitação
+}
+
+function clearPlayerFilter() {
+  const input = document.getElementById('player-filter');
+  if (input) { input.value = ''; input.focus(); }
+  document.getElementById('filter-clear')?.classList.remove('show');
+  document.getElementById('filter-info').textContent = '';
+  clearTimeout(playerFilterTimer);
+  renderEcoList(allEcoData);  // restaura snapshot sem chamada ao servidor
+}
+
+function updateFilterInfo(player, list) {
+  const infoEl = document.getElementById('filter-info');
+  if (!infoEl) return;
+  if (!player) { infoEl.textContent = ''; return; }
+  if (list.length === 0) { infoEl.textContent = 'Nenhum resultado.'; return; }
+  const totalB = list.reduce((s, it) => s + (it.blunders || 0), 0);
+  infoEl.textContent = `${list.length} ECO(s) · ${totalB} blunder(s)`;
+}
+
+function renderEcoList(data) {
+  const el = document.getElementById('eco-list');
+  if (!data || data.length === 0) {
+    el.innerHTML = '<div style="padding:14px;color:var(--muted);font-size:12px">Nenhum resultado para o filtro.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  data.forEach(it => {
+    const div = document.createElement('div');
+    div.className = 'ei' + (currentEco === it.eco ? ' active' : '');
+    div.id = `eco-${it.eco}`;
+    div.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0">
+        <span class="ei-eco">${esc(it.eco)}</span>
+        <span class="ei-name">${esc(it.opening || '(sem nome)')}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
+        <span class="ei-meta">${it.games} partida${it.games !== 1 ? 's' : ''}</span>
+        ${it.blunders > 0
+          ? `<span class="ei-blunder">${it.blunders} blunder${it.blunders !== 1 ? 's' : ''}</span>`
+          : '<span class="ei-meta">—</span>'}
+      </div>`;
+    div.onclick = () => selectEco(it.eco);
+    el.appendChild(div);
+  });
 }
 
 async function selectEco(eco) {
@@ -338,7 +506,11 @@ async function selectEco(eco) {
 
   setStatus(`Buscando puzzles para ${eco}...`, 'inf');
   try {
-    const res = await fetch(`/api/puzzles?eco=${encodeURIComponent(eco)}`);
+    const activePlayer = (document.getElementById('player-filter')?.value || '').trim();
+    const puzzleUrl = activePlayer
+      ? `/api/puzzles?eco=${encodeURIComponent(eco)}&player=${encodeURIComponent(activePlayer)}`
+      : `/api/puzzles?eco=${encodeURIComponent(eco)}`;
+    const res  = await fetch(puzzleUrl);
     const data = await res.json();
     if (!data.ok) {
       setStatus(data.message || 'Erro', 'err');
@@ -347,7 +519,7 @@ async function selectEco(eco) {
       updateCounter();
       return;
     }
-    puzzles = data.puzzles || [];
+    puzzles    = data.puzzles || [];
     currentEco = eco;
     currentIdx = 0;
 
@@ -355,60 +527,57 @@ async function selectEco(eco) {
       setStatus(`Nenhum blunder encontrado para o ECO ${eco}. Analise as partidas primeiro.`, 'err');
       currentPuzzle = null;
       board.position('start', false);
-      document.getElementById('pi-title').textContent = '—';
+      document.getElementById('pi-title').textContent  = '—';
       document.getElementById('pi-detail').textContent = '';
       document.getElementById('orig-played').textContent = '—';
-      document.getElementById('orig-best').textContent = '—';
+      document.getElementById('orig-best').textContent   = '—';
+      const gm = document.getElementById('game-meta');
+      if (gm) gm.style.display = 'none';
       updateCounter();
       return;
     }
     setStatus(`${puzzles.length} puzzle(s) encontrado(s) para ${eco}.`, 'ok');
     loadPuzzle(0);
-  } catch (e) {
+  } catch(e) {
     setStatus('Erro ao buscar puzzles.', 'err');
   }
 }
 
-// ── Carrega puzzle ──────────────────────────────────────
+// ── Carrega puzzle ────────────────────────────────────────────────────────────
 function loadPuzzle(idx) {
   if (!puzzles.length) return;
   idx = Math.max(0, Math.min(idx, puzzles.length - 1));
-  currentIdx = idx;
+  currentIdx    = idx;
   currentPuzzle = puzzles[idx];
-  currentFen = currentPuzzle.fen;
-  solved = false;
+  currentFen    = currentPuzzle.fen;
+  solved        = false;
 
-  // Tabuleiro orientado para o lado a jogar
   const side = currentPuzzle.sideToMove;
-  if ((side === 'w' && flipped) || (side === 'b' && !flipped)) {
-    flipped = (side === 'b');
-    board.orientation(side === 'w' ? 'white' : 'black');
-  } else {
-    board.orientation(side === 'w' ? 'white' : 'black');
-  }
+  board.orientation(side === 'w' ? 'white' : 'black');
+  flipped = (side === 'b');
 
   board.position(currentFen, false);
   clearHL();
 
-  // Info do puzzle
   document.getElementById('pi-title').innerHTML =
       `${esc(currentPuzzle.white)} vs ${esc(currentPuzzle.black)}` +
       `<span class="pi-side ${side}">${side === 'w' ? 'BRANCAS jogam' : 'PRETAS jogam'}</span>`;
   document.getElementById('pi-detail').textContent =
       `${currentPuzzle.eco} · ${currentPuzzle.opening || '(sem nome)'} · lance ${currentPuzzle.moveNumber}`;
 
-  // Painel original
-  document.getElementById('orig-played').textContent = '(escondido — resolva primeiro)';
-  document.getElementById('orig-played').style.color = 'var(--muted)';
-  document.getElementById('orig-best').textContent = '(escondido — resolva primeiro)';
-  document.getElementById('orig-best').style.color = 'var(--muted)';
+  document.getElementById('orig-played').textContent  = '(escondido — resolva primeiro)';
+  document.getElementById('orig-played').style.color  = 'var(--muted)';
+  document.getElementById('orig-best').textContent    = '(escondido — resolva primeiro)';
+  document.getElementById('orig-best').style.color    = 'var(--muted)';
 
-  // Feedback reset
-  document.getElementById('fb-class').textContent = '—';
-  document.getElementById('fb-class').style.color = 'var(--muted)';
-  document.getElementById('fb-msg').textContent = 'Faça um lance para ver a avaliação do Stockfish.';
-  document.getElementById('fb-msg').style.color = 'var(--muted)';
-  document.getElementById('fb-detail').textContent = '';
+  document.getElementById('fb-class').textContent  = '—';
+  document.getElementById('fb-class').style.color  = 'var(--muted)';
+  document.getElementById('fb-msg').textContent    = 'Faça um lance para ver a avaliação do Stockfish.';
+  document.getElementById('fb-msg').style.color    = 'var(--muted)';
+  document.getElementById('fb-detail').innerHTML   = '';
+
+  // Mostra metadados da partida (data, ratings, link) logo ao carregar o puzzle
+  updateGameMeta(currentPuzzle);
 
   updateCounter();
   updateNavBtns();
@@ -438,29 +607,31 @@ function goFirst() { if (puzzles.length) loadPuzzle(0); }
 function goPrev()  { if (currentIdx > 0) loadPuzzle(currentIdx - 1); }
 function goNext()  { if (currentIdx < puzzles.length - 1) loadPuzzle(currentIdx + 1); }
 function goLast()  { if (puzzles.length) loadPuzzle(puzzles.length - 1); }
+function resetPuzzle() { if (currentPuzzle) loadPuzzle(currentIdx); }
 
-function resetPuzzle() {
-  if (currentPuzzle) loadPuzzle(currentIdx);
-}
-
+// ── Melhoria 1: showHint com SAN + figurina ──────────────────────────────────
 function showHint() {
   if (!currentPuzzle || !currentPuzzle.bestMove) {
     setStatus('Sem dica disponível para este puzzle.', 'err');
     return;
   }
-  const uci = currentPuzzle.bestMove;
+  const uci  = currentPuzzle.bestMove;
   if (uci.length < 4) return;
   const from = uci.substring(0, 2);
   const to   = uci.substring(2, 4);
   clearHL();
   $(`#board .square-${from}`).addClass('hl-best');
   $(`#board .square-${to}`).addClass('hl-best');
-  setStatus(`Dica: peça em ${from} → ${to}`, 'inf');
+
+  // Converte o lance de dica para SAN com figurina
+  const san = uciToSan(currentPuzzle.fen, uci);
+  const fig = sanFig(san, currentPuzzle.sideToMove);
+  setStatus(`Dica: ${fig}  (${from} → ${to})`, 'inf');
 }
 
 function flipBoard() { flipped = !flipped; board.flip(); }
 
-// ── Drag & drop ─────────────────────────────────────────
+// ── Drag & drop ───────────────────────────────────────────────────────────────
 async function onDragStart(source, piece) {
   if (!currentPuzzle || solved) return false;
   const side = currentPuzzle.sideToMove;
@@ -481,7 +652,6 @@ async function onDrop(source, target) {
     catch { clearHL(); return 'snapback'; }
   }
 
-  // Verifica se o alvo é legal
   if (legalTargets.length && !legalTargets.includes(target)) {
     clearHL();
     return 'snapback';
@@ -530,14 +700,14 @@ async function showLegalMoves(from) {
   $(`#board .square-${from}`).addClass('hl-from');
   legalTargets = [];
   try {
-    const r = await fetch(`/api/board/legal-moves?fen=${encodeURIComponent(currentFen)}&from=${from}`);
+    const r    = await fetch(`/api/board/legal-moves?fen=${encodeURIComponent(currentFen)}&from=${from}`);
     const data = await r.json();
     legalTargets = data.targets || [];
     legalTargets.forEach(sq => $(`#board .square-${sq}`).addClass('hl-legal'));
-  } catch (e) { console.error(e); }
+  } catch(e) { console.error(e); }
 }
 
-// ── Submete o lance ─────────────────────────────────────
+// ── Melhoria 1 + 3: submitMove com figurinas e linha PV ──────────────────────
 async function submitMove(from, to, promotion) {
   setStatus('Avaliando com Stockfish...', 'inf');
   try {
@@ -545,64 +715,133 @@ async function submitMove(from, to, promotion) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        fen: currentFen,
-        from, to, promotion,
+        fen:        currentFen,
+        from, to,  promotion,
         evalBefore: currentPuzzle.evalBefore,
-        bestMove: currentPuzzle.bestMove,
+        bestMove:   currentPuzzle.bestMove,
         depth: 14
       })
     });
     const data = await res.json();
     if (!data.ok) {
-      setStatus(data.message || 'Erro', 'err');
+      // Formata o lance tentado como SAN+figurina no lugar do UCI bruto
+      const uci = from + to + (promotion || '');
+      let moveLabel;
+      try {
+        const san = uciToSan(currentFen, uci);
+        // uciToSan retorna o próprio UCI quando o lance é ilegal no chess.js
+        moveLabel = (san && san !== uci)
+          ? sanFig(san, currentPuzzle.sideToMove)
+          : `${from}→${to}`;
+      } catch(ex) {
+        moveLabel = `${from}→${to}`;
+      }
+      // Substitui o padrão UCI "xXyY" pela notação legível na mensagem
+      const rawMsg = data.message || 'Erro';
+      const formattedMsg = rawMsg.replace(/[a-h][1-8][a-h][1-8][qrbn]?/gi, moveLabel);
+      setStatus(formattedMsg, 'err');
       board.position(currentFen, false);
       clearHL();
       return;
     }
 
-    // Atualiza tabuleiro com o lance jogado
+    // Atualiza tabuleiro
     currentFen = data.playedFen;
     board.position(currentFen, false);
     clearHL();
 
-    // Highlight from/to do lance jogado
     const cls = data.classification.color === 'good' ? 'hl-good'
               : data.classification.color === 'warn' ? 'hl-best'
               : 'hl-bad';
     $(`#board .square-${from}`).addClass(cls);
     $(`#board .square-${to}`).addClass(cls);
 
-    // Feedback
-    const c = data.classification;
+    // Feedback de classificação
+    const c        = data.classification;
     const colorVar = c.color === 'good' ? 'var(--green)'
                     : c.color === 'warn' ? 'var(--yellow)' : 'var(--red)';
     document.getElementById('fb-class').textContent = c.classification;
     document.getElementById('fb-class').style.color = colorVar;
-    document.getElementById('fb-msg').textContent = c.message;
-    document.getElementById('fb-msg').style.color = 'var(--text)';
+    document.getElementById('fb-msg').textContent   = c.message;
+    document.getElementById('fb-msg').style.color   = 'var(--text)';
 
-    let evalAfterStr = c.mateInAfter != null
+    // Lado do jogador e do oponente
+    const side    = currentPuzzle.sideToMove;   // quem acabou de jogar
+    const oppSide = side === 'w' ? 'b' : 'w';  // quem responde
+
+    // Avaliações formatadas
+    const evalAfterStr  = c.mateInAfter != null
         ? (c.mateInAfter > 0 ? '+M' : '-M') + Math.abs(c.mateInAfter)
-        : (c.evalAfter != null ? (c.evalAfter >= 0 ? '+' : '') + c.evalAfter.toFixed(2) : '?');
-    let evalBeforeStr = c.evalBefore != null
+        : (c.evalAfter  != null ? (c.evalAfter  >= 0 ? '+' : '') + c.evalAfter.toFixed(2)  : '?');
+    const evalBeforeStr = c.evalBefore != null
         ? (c.evalBefore >= 0 ? '+' : '') + c.evalBefore.toFixed(2) : '?';
-    let detailHtml = `Lance: <b>${esc(data.playedSan)}</b><br>` +
-        `Eval antes: ${evalBeforeStr} → depois: ${evalAfterStr}`;
-    if (data.stockfishBestMove)
-      detailHtml += `<br>Melhor agora: <span style="color:var(--green)">${esc(data.stockfishBestMove)}</span>`;
-    document.getElementById('fb-detail').innerHTML = detailHtml;
 
-    // Revela info original
-    document.getElementById('orig-played').textContent =
-        `${currentPuzzle.playedSan || currentPuzzle.playedUci}`;
+    // ── Lance jogado com figurina
+    const playedFig = sanFig(data.playedSan || '', side);
+
+    // ── Melhor lance do Stockfish (UCI → SAN → figurina, perspectiva do oponente)
+    let sfBestHtml = '';
+    if (data.stockfishBestMove) {
+      const sfSan = uciToSan(data.playedFen, data.stockfishBestMove);
+      const sfFig = sanFig(sfSan, oppSide);
+      sfBestHtml = `<br>Melhor agora: <span style="color:var(--green);font-size:13px">${esc(sfFig)}</span>`;
+    }
+
+    // ── MultiPV: até 4 variantes com destaque na linha principal
+    let pvHtml = '';
+    if (data.pvLines && data.pvLines.length > 0) {
+      pvHtml = '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">' +
+               '<div style="font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;' +
+               'letter-spacing:.06em;margin-bottom:6px">Variantes Stockfish</div>';
+
+      data.pvLines.forEach(line => {
+        const isPrimary = line.pvIndex === 1;
+        // Avaliação da linha
+        const evalStr = line.mateIn != null
+          ? (line.mateIn > 0 ? '+M' : '-M') + Math.abs(line.mateIn)
+          : (line.eval != null ? (line.eval >= 0 ? '+' : '') + Number(line.eval).toFixed(2) : '?');
+        // Variante completa: começa com o lance jogado pelo usuário + continuação do Stockfish
+        const continuation = pvToFigSan(data.playedFen, line.moves || [], 4);
+        const pvStr = continuation ? (playedFig + '  ' + continuation) : playedFig;
+        const prefix = isPrimary ? '★' : `${line.pvIndex}.`;
+        const rowStyle = isPrimary
+          ? 'color:var(--green);font-weight:700;margin-bottom:5px'
+          : 'color:var(--muted);margin-bottom:4px;font-size:11px';
+        const evalStyle = isPrimary ? 'color:var(--accent)' : 'color:var(--muted)';
+        pvHtml += `<div class="pv-line" style="${rowStyle}">` +
+          `<span style="margin-right:4px">${esc(prefix)}</span>` +
+          `<span style="${evalStyle};font-variant-numeric:tabular-nums;margin-right:6px">${evalStr}</span>` +
+          `<span>${esc(pvStr)}</span>` +
+          `</div>`;
+      });
+      pvHtml += '</div>';
+    } else if (data.stockfishPv && data.stockfishPv.length > 0) {
+      // Fallback para análise sem MultiPV
+      const pvStr = pvToFigSan(data.playedFen, data.stockfishPv, 5);
+      if (pvStr) {
+        pvHtml = `<div class="pv-line" style="margin-top:6px">Variante: ${esc(pvStr)}</div>`;
+      }
+    }
+
+    document.getElementById('fb-detail').innerHTML =
+        `Lance: <b>${esc(playedFig)}</b><br>` +
+        `Eval antes: ${evalBeforeStr} → depois: ${evalAfterStr}` +
+        sfBestHtml + pvHtml;
+
+    // ── Revela info original com figurinas
+    const origPlayedSan = currentPuzzle.playedSan || currentPuzzle.playedUci || '';
+    document.getElementById('orig-played').textContent = sanFig(origPlayedSan, side) || origPlayedSan;
     document.getElementById('orig-played').style.color = 'var(--red)';
-    document.getElementById('orig-best').textContent =
-        currentPuzzle.bestMove || '—';
+
+    const bestUci = currentPuzzle.bestMove || '';
+    const bestSan = uciToSan(currentPuzzle.fen, bestUci);
+    document.getElementById('orig-best').textContent = sanFig(bestSan, side) || bestSan || '—';
     document.getElementById('orig-best').style.color = 'var(--green)';
 
     solved = true;
     setStatus(`${c.classification} — use → para o próximo puzzle.`, c.color === 'bad' ? 'err' : 'ok');
-  } catch (e) {
+
+  } catch(e) {
     console.error(e);
     setStatus('Erro ao avaliar lance.', 'err');
     board.position(currentFen, false);
@@ -610,15 +849,15 @@ async function submitMove(from, to, promotion) {
   }
 }
 
-// ── Promotion ───────────────────────────────────────────
+// ── Promoção ──────────────────────────────────────────────────────────────────
 function askPromotion(sideToMove) {
   return new Promise((resolve, reject) => {
     const prefix = sideToMove === 'w' ? 'w' : 'b';
     const pieces = [
-      { char: 'q', label: 'Dama',   code: prefix + 'Q' },
-      { char: 'r', label: 'Torre',  code: prefix + 'R' },
-      { char: 'b', label: 'Bispo',  code: prefix + 'B' },
-      { char: 'n', label: 'Cavalo', code: prefix + 'N' }
+      { char:'q', label:'Dama',   code: prefix+'Q' },
+      { char:'r', label:'Torre',  code: prefix+'R' },
+      { char:'b', label:'Bispo',  code: prefix+'B' },
+      { char:'n', label:'Cavalo', code: prefix+'N' }
     ];
     const container = document.getElementById('promo-pieces');
     container.innerHTML = '';
@@ -637,7 +876,65 @@ function askPromotion(sideToMove) {
   });
 }
 
-// ── Helpers ─────────────────────────────────────────────
+// ── Info da partida ───────────────────────────────────────────────────────────
+
+/** Formata a data da partida (ISO "2024-01-12" ou PGN "2024.01.12") em pt-BR. */
+function formatGameDate(raw) {
+  if (!raw || raw === '?' || raw.trim() === '') return '';
+  // Remove fragmentos de data incompletos ("????" ou "2024.??.??")
+  const cleaned = raw.replace(/\?/g, '').replace(/^[-.\s]+|[-.\s]+$/g, '').trim();
+  if (!cleaned) return '';
+  try {
+    const iso = cleaned.replace(/\./g, '-');
+    const d   = new Date(iso + 'T00:00:00');
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+  } catch(e) {}
+  return cleaned;
+}
+
+/**
+ * Constrói a URL da partida a partir dos campos site / gameId do puzzle.
+ * Retorna null se não for possível determinar um link válido.
+ */
+function gameLink(puzzle) {
+  const site   = (puzzle.site   || '').trim();
+  const gameId = (puzzle.gameId || '').trim();
+  if (site.startsWith('http')) return site;
+  // gameId curto (≤ 16 chars) + site menciona lichess → constrói URL
+  if (gameId && gameId.length <= 16 && site.toLowerCase().includes('lichess')) {
+    return 'https://lichess.org/' + gameId;
+  }
+  // gameId curto sem site identificado mas parece um ID do Lichess (alfanumérico)
+  if (gameId && gameId.length <= 16 && /^[a-zA-Z0-9]+$/.test(gameId)) {
+    return 'https://lichess.org/' + gameId;
+  }
+  return null;
+}
+
+/** Atualiza o bloco #game-meta com data, ratings e link da partida. */
+function updateGameMeta(puzzle) {
+  const el = document.getElementById('game-meta');
+  if (!el || !puzzle) return;
+
+  const dateStr = formatGameDate(puzzle.date);
+  const wElo    = puzzle.whiteElo ? ` (${puzzle.whiteElo})` : '';
+  const bElo    = puzzle.blackElo ? ` (${puzzle.blackElo})` : '';
+  const url     = gameLink(puzzle);
+  const linkHtml = url
+    ? ` · <a href="${esc(url)}" target="_blank" rel="noopener">Ver no Lichess ↗</a>`
+    : '';
+
+  const parts = [];
+  if (dateStr) parts.push(`📅 ${dateStr}`);
+  parts.push(`${esc(puzzle.white)}${wElo} vs ${esc(puzzle.black)}${bElo}`);
+
+  el.innerHTML = parts.join(' · ') + linkHtml;
+  el.style.display = 'block';
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function isPromotionMove(fen, from, to) {
   const side = fen.split(' ')[1] || 'w';
   if (side === 'w' && from[1] === '7' && to[1] === '8') return true;
@@ -653,24 +950,25 @@ function clearHL() {
 function setStatus(msg, level) {
   const el = document.getElementById('status-bar');
   el.textContent = msg;
-  el.className = level === 'ok' ? 's-ok' : level === 'err' ? 's-err' : 's-inf';
+  el.className   = level === 'ok' ? 's-ok' : level === 'err' ? 's-err' : 's-inf';
 }
 
 function esc(s) {
-  return (s || '').toString().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return (s || '').toString()
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// Atalhos de teclado
+// ── Atalhos de teclado ────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) return;
   switch (e.key) {
-    case 'ArrowLeft':  e.preventDefault(); goPrev(); break;
-    case 'ArrowRight': e.preventDefault(); goNext(); break;
+    case 'ArrowLeft':  e.preventDefault(); goPrev();  break;
+    case 'ArrowRight': e.preventDefault(); goNext();  break;
     case 'Home':       e.preventDefault(); goFirst(); break;
-    case 'End':        e.preventDefault(); goLast(); break;
+    case 'End':        e.preventDefault(); goLast();  break;
     case 'r': case 'R': resetPuzzle(); break;
-    case 'h': case 'H': showHint(); break;
-    case 'f': case 'F': flipBoard(); break;
+    case 'h': case 'H': showHint();    break;
+    case 'f': case 'F': flipBoard();   break;
   }
 });
 </script>
