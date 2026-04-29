@@ -34,6 +34,7 @@ import com.chess.analyzer.service.PartidaSaveService;
 import com.chess.analyzer.service.PartidaSaveService.SaveResult;
 import com.chess.analyzer.service.PgnService;
 import com.chess.analyzer.service.StockfishPoolService;
+import com.chess.analyzer.service.StockfishService;
 
 /**
  * Controlador principal — expõe a SPA e todos os endpoints REST/SSE.
@@ -65,16 +66,20 @@ public class GameController {
 	private static final Logger log = LoggerFactory.getLogger(GameController.class);
 
 	private final StockfishPoolService stockfishPool;
+	private final StockfishService     stockfishService;
 	private final PgnService pgnService;
 	private final GameAnalysisService analysisService;
 	private final BoardService boardService;
 	private final AppProperties appProperties;
 	private final PartidaSaveService partidaSaveService;
 
-	public GameController(StockfishPoolService stockfishPool, PgnService pgnService,
+	public GameController(StockfishPoolService stockfishPool,
+			StockfishService stockfishService,
+			PgnService pgnService,
 			GameAnalysisService analysisService, BoardService boardService,
 			AppProperties appProperties, PartidaSaveService partidaSaveService) {
-		this.stockfishPool = stockfishPool;
+		this.stockfishPool    = stockfishPool;
+		this.stockfishService = stockfishService;
 		this.pgnService = pgnService;
 		this.analysisService = analysisService;
 		this.boardService = boardService;
@@ -104,6 +109,15 @@ public class GameController {
 			}
 			stockfishPool.start(stockfishPath, effectivePoolSize);
 			analysisService.setAnalysisDepth(depth);
+
+			// Inicia também a engine ao vivo (instância singleton para live analysis)
+			try {
+				stockfishService.start(stockfishPath);
+				log.info("Live Stockfish engine iniciada em '{}'.", stockfishPath);
+			} catch (Exception e) {
+				log.warn("Live engine não pôde ser iniciada (análise ao vivo indisponível): {}", e.getMessage());
+			}
+
 			return ResponseEntity
 					.ok(Map.of("ok", true, "message", "Pool Stockfish iniciado com %d instância(s) e profundidade %d"
 							.formatted(effectivePoolSize, depth)));

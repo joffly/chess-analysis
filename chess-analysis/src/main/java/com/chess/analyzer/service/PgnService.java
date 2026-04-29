@@ -70,6 +70,19 @@ public class PgnService {
 		}
 	}
 
+	/**
+	 * Carrega partidas diretamente a partir de uma {@code String} com conteúdo PGN.
+	 *
+	 * <p>Útil para importações programáticas (ex: download da API do Lichess)
+	 * onde o PGN já está disponível em memória.</p>
+	 *
+	 * @param pgnContent conteúdo PGN completo
+	 * @return lista de {@link GameData} parseadas
+	 */
+	public List<GameData> loadFromString(String pgnContent) throws Exception {
+		return parseContent(pgnContent);
+	}
+
 	private List<GameData> parseContent(String pgnContent) throws Exception {
 		PgnHolder pgn = new PgnHolder("-");
 		pgn.loadPgn(pgnContent);

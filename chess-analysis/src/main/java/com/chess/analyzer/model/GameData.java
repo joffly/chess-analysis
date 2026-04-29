@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -82,6 +83,22 @@ public class GameData {
 		} catch (NoSuchAlgorithmException e) {
 			throw new IllegalStateException("SHA-256 não disponível", e);
 		}
+	}
+
+	/**
+	 * Retorna uma nova instância com a tag {@code __fonte_pgn__} adicionada.
+	 *
+	 * <p>Utilizado antes de persistir partidas importadas de fontes externas
+	 * (ex: Lichess), de modo que o campo {@code fonte_pgn} da entidade seja
+	 * preenchido corretamente pelo {@code PartidaUpsertService}.</p>
+	 *
+	 * @param fontePgn identificador da fonte, ex: {@code "lichess:magnuscarlsen"}
+	 * @return novo {@code GameData} com a tag adicionada; o objeto original não é modificado
+	 */
+	public GameData withFontePgn(String fontePgn) {
+		Map<String, String> newTags = new LinkedHashMap<>(this.tags);
+		newTags.put("__fonte_pgn__", fontePgn);
+		return new GameData(this.index, newTags, this.initialFen, this.moves);
 	}
 
 	// ── Summary DTO (sem os lances, usado na listagem) ──────────────────────
