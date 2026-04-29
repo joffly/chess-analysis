@@ -1,2 +1,5 @@
 /lib/
 /target/
+
+# Allow templates directory
+!src/main/resources/templates/
