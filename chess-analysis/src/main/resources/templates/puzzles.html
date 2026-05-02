@@ -136,6 +136,17 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 #game-meta a{color:var(--accent);text-decoration:none}
 #game-meta a:hover{text-decoration:underline}
 
+/* Explain IA */
+#puzzle-explain-section{margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+.btn-explain{width:100%;border:1px solid var(--accent);background:transparent;color:var(--accent);
+  border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;font-weight:600;transition:background .15s}
+.btn-explain:hover:not(:disabled){background:var(--accent);color:#000}
+.btn-explain:disabled{opacity:.4;cursor:default}
+#puzzle-explain-output{margin-top:6px;background:var(--card);border:1px solid var(--border);
+  border-radius:6px;padding:8px 10px;max-height:260px;overflow-y:auto;display:none}
+.puzzle-explain-text{white-space:pre-wrap;font-size:12px;line-height:1.55;
+  font-family:'Segoe UI',system-ui,sans-serif}
+
 /* Header bar */
 #topbar{padding:8px 14px;border-bottom:1px solid var(--border);
   background:var(--panel);display:flex;align-items:center;gap:10px}
@@ -255,6 +266,19 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
       <div id="fb-detail"></div>
       <div id="game-meta" style="display:none;margin-top:10px;padding-top:8px;
         border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.6"></div>
+
+      <!-- Explicação por IA — aparece após o lance ser avaliado -->
+      <div id="puzzle-explain-section" style="display:none">
+        <button class="btn-explain" id="btn-puzzle-explain" onclick="explainPuzzlePosition()">
+          🤖 Explicar com IA
+        </button>
+        <div id="puzzle-explain-output"></div>
+      </div>
+    </div>
+
+    <div id="counter-box">
+      <div id="counter">—</div>
+      <div id="counter-meta">Selecione um ECO para começar.</div>
     </div>
 
     <div id="orig-box">
@@ -262,11 +286,6 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
       <div id="orig-played">—</div>
       <div class="ol" style="margin-top:8px">Melhor lance (Stockfish, da análise)</div>
       <div id="orig-best">—</div>
-    </div>
-
-    <div id="counter-box">
-      <div id="counter">—</div>
-      <div id="counter-meta">Selecione um ECO para começar.</div>
     </div>
   </div>
 
@@ -576,6 +595,12 @@ function loadPuzzle(idx) {
   document.getElementById('fb-msg').style.color    = 'var(--muted)';
   document.getElementById('fb-detail').innerHTML   = '';
 
+  // Oculta seção de IA ao carregar novo puzzle
+  document.getElementById('puzzle-explain-section').style.display = 'none';
+  document.getElementById('puzzle-explain-output').style.display  = 'none';
+  document.getElementById('puzzle-explain-output').innerHTML = '';
+  lastExplainData = null;
+
   // Mostra metadados da partida (data, ratings, link) logo ao carregar o puzzle
   updateGameMeta(currentPuzzle);
 
@@ -841,6 +866,9 @@ async function submitMove(from, to, promotion) {
     solved = true;
     setStatus(`${c.classification} — use → para o próximo puzzle.`, c.color === 'bad' ? 'err' : 'ok');
 
+    // Prepara dados para o explain por IA
+    prepareExplain(currentPuzzle.fen, data.playedSan || '', 14, data.pvLines || []);
+
   } catch(e) {
     console.error(e);
     setStatus('Erro ao avaliar lance.', 'err');
@@ -956,6 +984,66 @@ function setStatus(msg, level) {
 function esc(s) {
   return (s || '').toString()
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Explicação por IA ─────────────────────────────────────────────────────────
+
+/** Dados do último lance avaliado, usados pelo explain. */
+let lastExplainData = null;  // { fen, moveSan, depth, lines: [{rank,evalStr,movesText}] }
+
+/** Chamado ao concluir submitMove — armazena dados para o explain e exibe o botão. */
+function prepareExplain(puzzleFen, playedSan, depth, pvLines) {
+  const lines = (pvLines || []).map(line => {
+    const evalStr = line.mateIn != null
+      ? (line.mateIn > 0 ? '+M' : '-M') + Math.abs(line.mateIn)
+      : (line.eval != null ? (line.eval >= 0 ? '+' : '') + Number(line.eval).toFixed(2) : '?');
+    const movesText = pvToFigSan(puzzleFen, line.moves || [], 8);
+    return { rank: line.pvIndex || 1, evalStr, movesText };
+  });
+
+  lastExplainData = { fen: puzzleFen, moveSan: playedSan, depth: depth || 14, lines };
+
+  // Limpa saída anterior e exibe botão
+  document.getElementById('puzzle-explain-output').style.display = 'none';
+  document.getElementById('puzzle-explain-output').innerHTML = '';
+  document.getElementById('puzzle-explain-section').style.display = '';
+}
+
+async function explainPuzzlePosition() {
+  if (!lastExplainData) return;
+
+  const btn = document.getElementById('btn-puzzle-explain');
+  const out = document.getElementById('puzzle-explain-output');
+
+  btn.disabled    = true;
+  btn.textContent = '⏳ Consultando IA…';
+  out.style.display  = '';
+  out.innerHTML = '<div style="color:var(--accent);font-size:12px">Aguardando resposta do LMStudio…</div>';
+
+  try {
+    const res = await fetch('/api/engine/explain', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fen:     lastExplainData.fen,
+        moveSan: lastExplainData.moveSan,
+        depth:   lastExplainData.depth,
+        lines:   lastExplainData.lines
+      })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      out.innerHTML = `<div class="puzzle-explain-text">${esc(data.explanation)}</div>`;
+    } else {
+      out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ ${esc(data.message)}</div>`;
+    }
+  } catch(e) {
+    out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ Erro ao conectar com o LMStudio.</div>`;
+    console.error('puzzle explain error', e);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '🤖 Explicar com IA';
+  }
 }
 
 // ── Atalhos de teclado ────────────────────────────────────────────────────────

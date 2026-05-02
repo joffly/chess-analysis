@@ -239,6 +239,39 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
 .engine-eval.mate{color:#ffd700}
 .engine-moves{font-size:12px;color:var(--text);font-family:monospace;word-break:break-word;line-height:1.5}
 
+/* ── Engine explain ─────────────────────────────────────── */
+#engine-explain-section{margin-top:6px;border-top:1px solid var(--border);padding-top:6px}
+.btn-explain{
+  width:100%;padding:5px 10px;border-radius:5px;
+  border:1px solid var(--accent);background:transparent;
+  color:var(--accent);cursor:pointer;font-size:12px;font-weight:600;
+  transition:all .12s
+}
+.btn-explain:hover:not(:disabled){background:var(--accent);color:#000}
+.btn-explain:disabled{opacity:.4;cursor:default}
+#engine-explain-output{
+  margin-top:6px;padding:8px 10px;border-radius:5px;
+  background:var(--card);border:1px solid var(--border);
+  font-size:12px;line-height:1.7;color:var(--text);max-height:280px;overflow-y:auto
+}
+.engine-explain-text{white-space:pre-wrap;font-family:'Segoe UI',system-ui,sans-serif}
+.engine-explain-meta{margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font-size:10px;color:var(--muted);text-align:right}
+.engine-explain-meta .meta-pill{display:inline-flex;align-items:center;gap:4px}
+.engine-explain-meta code{background:rgba(255,255,255,.05);padding:1px 5px;border-radius:3px;font-family:monospace;font-size:10px;color:var(--accent)}
+
+/* Botão "+ aprofundar análise" estilo lichess */
+.engine-deeper-btn{
+  width:100%;margin-top:6px;padding:5px 10px;border-radius:5px;
+  border:1px dashed var(--green);background:transparent;color:var(--green);
+  cursor:pointer;font-size:11px;font-weight:600;transition:all .12s
+}
+.engine-deeper-btn:hover{background:rgba(63,185,80,.12)}
+.engine-deeper-btn.exhausted{border-color:var(--muted);color:var(--muted);cursor:default}
+.engine-deeper-btn.exhausted:hover{background:transparent}
+
+/* Threads desabilitado quando build é single-thread */
+.engine-ctrl-lbl.disabled{color:var(--border);text-decoration:line-through;opacity:.5}
+
 /* scrollbar */
 ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 </style>
@@ -286,9 +319,14 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
     </a>
   </div>
 
-  <!-- Stockfish -->
+  <!-- Stockfish (servidor) — usado pela análise em lote do PGN
+       e pelo botão "Análise Profunda" do painel ao vivo.        -->
   <div class="ps">
-    <div class="ptitle">⚙ Stockfish</div>
+    <div class="ptitle">⚙ Stockfish (servidor)</div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.45">
+      Engine no servidor para análise em lote e análise profunda.
+      O painel ao vivo usa o Stockfish embarcado no navegador.
+    </div>
     <input id="sf-path" class="fc" type="text" placeholder="Caminho para stockfish.exe" style="margin-bottom:6px"/>
     <div style="display:flex;gap:6px;align-items:center">
       <label style="font-size:12px;color:var(--muted);white-space:nowrap">Depth</label>
@@ -337,6 +375,7 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
 
     <!-- Username -->
     <input id="lichess-user" class="fc" type="text"
+           th:value="${lichessDefaultUser}"
            placeholder="Username do Lichess (ex: magnuscarlsen)"
            style="margin-bottom:6px"
            onkeydown="if(event.key==='Enter')importLichess()"/>
@@ -475,26 +514,71 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
     <div id="pv-line" style="color:var(--muted)">—</div>
   </div>
 
-  <!-- Live Engine Panel -->
+  <!-- Live Engine Panel — Stockfish embarcado no navegador (estilo lichess) -->
   <div id="live-engine-box">
     <div class="engine-hdr">
-      <span class="engine-hdr-lbl">🤖 Engine ao vivo</span>
+      <span class="engine-hdr-lbl">🤖 Engine ao vivo (navegador)</span>
       <button class="engine-toggle-btn" id="btn-engine-toggle" onclick="toggleEngine()">Liga</button>
     </div>
     <div id="engine-controls" style="display:none">
+      <!-- Linha 1: seletor de engine -->
+      <div class="engine-ctrl-row" style="margin-bottom:6px">
+        <span class="engine-ctrl-lbl" style="white-space:nowrap">Engine</span>
+        <select id="engine-select" class="fc" style="flex:1;padding:3px 6px;font-size:11px"
+                onchange="changeEngineBuild(this.value)">
+          <!-- preenchido por JS via LocalEngine.listEngines() -->
+        </select>
+      </div>
+
+      <!-- Linha 2: Linhas + Profundidade limite -->
       <div class="engine-ctrl-row">
-        <span class="engine-ctrl-lbl">Depth</span>
-        <button class="engine-step-btn" onclick="changeEngineDepth(-1)">−</button>
-        <span class="engine-val" id="engine-depth-val">18</span>
-        <button class="engine-step-btn" onclick="changeEngineDepth(+1)">+</button>
-        <span class="engine-ctrl-lbl" style="margin-left:4px">Linhas</span>
+        <span class="engine-ctrl-lbl">Linhas</span>
         <button class="engine-step-btn" onclick="changeEngineLines(-1)">−</button>
         <span class="engine-val" id="engine-lines-val">3</span>
         <button class="engine-step-btn" onclick="changeEngineLines(+1)">+</button>
+        <span class="engine-ctrl-lbl" style="margin-left:6px">Limite</span>
+        <button class="engine-step-btn" onclick="changeEngineDepth(-1)">−</button>
+        <span class="engine-val" id="engine-depth-val">25</span>
+        <button class="engine-step-btn" onclick="changeEngineDepth(+1)">+</button>
       </div>
+
+      <!-- Linha 3: Threads + Memória (Hash) -->
+      <div class="engine-ctrl-row">
+        <span class="engine-ctrl-lbl" id="engine-threads-lbl" title="Threads (apenas builds multi-thread)">Threads</span>
+        <button class="engine-step-btn" onclick="changeEngineThreads(-1)">−</button>
+        <span class="engine-val" id="engine-threads-val">1</span>
+        <button class="engine-step-btn" onclick="changeEngineThreads(+1)">+</button>
+        <span class="engine-ctrl-lbl" style="margin-left:6px">Hash</span>
+        <button class="engine-step-btn" onclick="changeEngineHash(-16)">−</button>
+        <span class="engine-val" id="engine-hash-val">32</span><span class="engine-ctrl-lbl" style="margin-left:2px">MB</span>
+        <button class="engine-step-btn" onclick="changeEngineHash(+16)">+</button>
+      </div>
+
       <div id="engine-thinking" style="display:none">⚙ Calculando…</div>
       <div id="engine-depth-badge"></div>
       <div id="engine-output"></div>
+
+      <!-- Botão "+" estilo lichess: aparece quando bate o limite de profundidade -->
+      <button id="btn-engine-deeper" class="engine-deeper-btn" style="display:none"
+              onclick="extendEngineAnalysis()" title="Continuar análise além do limite atual">
+        + aprofundar análise
+      </button>
+
+      <!-- Análise profunda via backend (Stockfish do servidor) -->
+      <div id="engine-deep-section" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px">
+        <button class="btn-explain" id="btn-deep" onclick="runDeepAnalysis()" style="border-color:var(--yellow);color:var(--yellow)">
+          ⚡ Análise Profunda (servidor)
+        </button>
+        <div id="engine-deep-output" style="display:none;margin-top:6px"></div>
+      </div>
+
+      <!-- Explain with AI -->
+      <div id="engine-explain-section" style="display:none">
+        <button class="btn-explain" id="btn-explain" onclick="explainPosition()">
+          🤖 Explicar com IA
+        </button>
+        <div id="engine-explain-output" style="display:none"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -507,6 +591,8 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-famil
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<!-- Stockfish embarcado no navegador (estilo lichess.org) -->
+<script src="/js/local-engine.js"></script>
 
 <script>
 'use strict';
@@ -537,12 +623,21 @@ let flipped       = false;
 
 let evtSource     = null;
 
-// Engine ao vivo
-let engineOn       = false;
-let engineDepth    = 18;
-let engineLines    = 3;
-let engineEvtSrc   = null;
-let engineDebounce = null;
+// Engine ao vivo (Stockfish embarcado no navegador)
+const ENGINE_DEPTH_TIERS = [25, 30, 35, 40, 60]; // estilo lichess: cada "+" sobe um tier
+let engineOn         = false;
+let engineKey        = 'lite-single'; // build atual (vide ENGINE_CATALOG do local-engine.js)
+let engineDepth      = 25;    // tier inicial — depois disso o usuário aperta "+"
+let engineLines      = 3;     // MultiPV
+let engineThreads    = 1;     // Threads (UCI option)
+let engineHashMb     = 32;    // Hash em MB
+let engineDebounce   = null;
+let localEngine      = null;  // instância de window.LocalEngine
+let localEngineInitPromise = null; // evita inicializações concorrentes
+let lastEngineFen    = null;  // FEN da última análise (para o explain/análise profunda)
+let lastEngineDepth  = 0;     // Profundidade alcançada na última análise
+let lastEngineFormatted = []; // [{rank, evalStr, movesText}] para o explain
+let deepAnalysisEvtSrc = null; // EventSource da análise profunda no servidor
 
 // ════════════════════════════════════════════════════════════
 //  Board Bootstrap
@@ -1062,6 +1157,7 @@ function goToPly(ply) {
   else { document.getElementById('bm-line').textContent = '—'; document.getElementById('pv-line').textContent = '—'; }
 
   updateNavBtns();
+  clearEngineExplain();
   scheduleEngineAnalysis();
 }
 
@@ -1139,6 +1235,33 @@ function updateEvalBar(ply) {
   bwhite.style.flex = String(wp);
   lbl.textContent   = text;
   lbl.style.color   = m.eval > 0.15 ? '#e0e0e0' : m.eval < -0.15 ? '#999' : 'var(--muted)';
+}
+
+/**
+ * Atualiza a barra de avaliação a partir de um valor "ao vivo" (sem
+ * depender da análise pré-computada do PGN). Usado pelo engine local.
+ *  @param {number|null} evalCp     – avaliação em peões (+ branco)
+ *  @param {number|null} mateIn     – mate em N lances (+ vence branco)
+ */
+function updateEvalBarLive(evalCp, mateIn) {
+  const bblack = document.getElementById('eb-black');
+  const bwhite = document.getElementById('eb-white');
+  const lbl    = document.getElementById('eval-lbl');
+  let wp = 50, text = '0.00', col = 'var(--muted)';
+  if (mateIn != null) {
+    wp   = mateIn > 0 ? 95 : 5;
+    text = (mateIn > 0 ? '+M' : '-M') + Math.abs(mateIn);
+    col  = '#ffd700';
+  } else if (evalCp != null) {
+    const c = Math.max(-5, Math.min(5, evalCp));
+    wp   = 50 + (c / 5) * 45;
+    text = (evalCp >= 0 ? '+' : '') + evalCp.toFixed(2);
+    col  = evalCp > 0.15 ? '#e0e0e0' : evalCp < -0.15 ? '#999' : 'var(--muted)';
+  }
+  bblack.style.flex = String(100 - wp);
+  bwhite.style.flex = String(wp);
+  lbl.textContent   = text;
+  lbl.style.color   = col;
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1396,26 +1519,113 @@ function esc(s) {
 }
 
 // ════════════════════════════════════════════════════════════
-//  Live Engine
+//  Live Engine — Stockfish embarcado no navegador (estilo lichess)
 // ════════════════════════════════════════════════════════════
 
-function toggleEngine() {
+/**
+ * Inicializa (uma única vez) a instância global do LocalEngine.
+ * Garante segurança contra chamadas concorrentes via cache de Promise.
+ */
+function ensureLocalEngine() {
+  if (localEngine && localEngine.ready) return Promise.resolve(localEngine);
+  if (localEngineInitPromise) return localEngineInitPromise;
+
+  localEngineInitPromise = (async () => {
+    try {
+      const eng = new window.LocalEngine();
+
+      eng.onUpdate = (data) => {
+        // data: { fen, depth, lines:[{rank,depth,eval,mateIn,evalStr,uciMoves}], final }
+        const fen = data.fen
+                  || lastEngineFen
+                  || (mode === 'free' ? freeFen : (positions[currentPly] || START_FEN));
+        renderEngineLines(data, fen);
+        const lblMax = engineDepth >= 60 ? '∞' : ('d' + engineDepth);
+        document.getElementById('engine-depth-badge').textContent =
+            (data.final ? '✓ d' : 'd') + data.depth + ' / ' + lblMax;
+        if (data.final) {
+          showEngineThinking(false);
+          // Lichess-style: ao bater no limite, mostra "+ aprofundar"
+          showDeeperButton(data.depth >= engineDepth);
+        } else {
+          showDeeperButton(false);
+        }
+        // Atualiza a barra de avaliação em tempo real a partir da melhor linha
+        const top = data.lines && data.lines[0];
+        if (top) updateEvalBarLive(top.eval, top.mateIn);
+        // Mantém os dados disponíveis para o "Explicar com IA"
+        lastEngineDepth = data.depth;
+      };
+
+      eng.onError = (msg) => {
+        showEngineThinking(false);
+        document.getElementById('engine-output').innerHTML =
+            `<div style="color:var(--red);font-size:12px">❌ Falha no Stockfish (navegador): ${esc(msg)}</div>`;
+      };
+
+      await eng.init({
+        engine:  engineKey,
+        multiPv: engineLines,
+        threads: engineThreads,
+        hashMb:  engineHashMb,
+      });
+      localEngine = eng;
+      // Mostra a versão da engine no badge inicial
+      const info = eng.getEngineInfo();
+      document.getElementById('engine-depth-badge').textContent =
+          (eng.engineName || 'Stockfish') + ' pronto · ' + (info.label || info.key || '');
+      // Reflete o estado do "Threads" na UI conforme o build escolhido
+      updateThreadsAvailability();
+      return eng;
+    } catch (e) {
+      console.error('Falha ao iniciar LocalEngine:', e);
+      throw e;
+    } finally {
+      localEngineInitPromise = null;
+    }
+  })();
+
+  return localEngineInitPromise;
+}
+
+async function toggleEngine() {
   engineOn = !engineOn;
   const btn  = document.getElementById('btn-engine-toggle');
   const ctrl = document.getElementById('engine-controls');
   btn.textContent = engineOn ? 'Desliga' : 'Liga';
   btn.classList.toggle('on', engineOn);
   ctrl.style.display = engineOn ? '' : 'none';
+
   if (engineOn) {
+    showEngineThinking(true);
+    document.getElementById('engine-output').innerHTML =
+        '<div style="color:var(--muted);font-size:11px">Carregando Stockfish (WASM)…</div>';
+    try {
+      await ensureLocalEngine();
+    } catch (e) {
+      showEngineThinking(false);
+      document.getElementById('engine-output').innerHTML =
+          `<div style="color:var(--red);font-size:12px">❌ Não foi possível carregar o Stockfish no navegador.<br/>
+           <span style="color:var(--muted);font-size:11px">${esc(e?.message || e)}</span></div>`;
+      engineOn = false;
+      btn.textContent = 'Liga';
+      btn.classList.remove('on');
+      return;
+    }
     scheduleEngineAnalysis(true);
   } else {
-    stopEngineStream();
+    if (localEngine) localEngine.stop();
     clearEngineLines();
+    clearEngineExplain();
+    stopDeepAnalysis();
+    showDeeperButton(false);
+    // Restaura a barra de avaliação a partir da análise pré-computada do PGN
+    if (mode === 'nav') updateEvalBar(currentPly);
   }
 }
 
 function changeEngineDepth(delta) {
-  engineDepth = Math.min(30, Math.max(1, engineDepth + delta));
+  engineDepth = Math.min(60, Math.max(8, engineDepth + delta));
   document.getElementById('engine-depth-val').textContent = engineDepth;
   if (engineOn) scheduleEngineAnalysis(true);
 }
@@ -1423,6 +1633,119 @@ function changeEngineDepth(delta) {
 function changeEngineLines(delta) {
   engineLines = Math.min(5, Math.max(1, engineLines + delta));
   document.getElementById('engine-lines-val').textContent = engineLines;
+  if (localEngine) localEngine.setMultiPv(engineLines);
+  if (engineOn) scheduleEngineAnalysis(true);
+}
+
+function changeEngineThreads(delta) {
+  const max = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+  engineThreads = Math.min(max, Math.max(1, engineThreads + delta));
+  document.getElementById('engine-threads-val').textContent =
+      engineThreads + ' / ' + max;
+  if (localEngine) localEngine.setThreads(engineThreads);
+  if (engineOn) scheduleEngineAnalysis(true);
+}
+
+function changeEngineHash(delta) {
+  engineHashMb = Math.min(512, Math.max(16, engineHashMb + delta));
+  document.getElementById('engine-hash-val').textContent = engineHashMb;
+  if (localEngine) localEngine.setHash(engineHashMb);
+  // Hash não exige reinício da busca
+}
+
+/**
+ * Trocou o build do Stockfish (lite/full, single/multi). Re-inicializa
+ * o LocalEngine com o novo binário e reinicia a análise.
+ *
+ * Se o usuário escolher um build multi-thread sem suporte do navegador,
+ * mostra mensagem clara e reverte o <select> para o build anterior.
+ */
+async function changeEngineBuild(newKey) {
+  if (!newKey || newKey === engineKey) return;
+
+  // Pré-checagem: multi-thread requer SharedArrayBuffer
+  const allEngines = window.LocalEngine.listEngines();
+  const cfg = allEngines.find(e => e.key === newKey);
+  if (cfg && cfg.multiThread && !window.LocalEngine.isMultiThreadSupported()) {
+    document.getElementById('engine-output').innerHTML =
+        `<div style="color:var(--red);font-size:12px;line-height:1.5">
+           ❌ <b>${esc(cfg.label)}</b> requer cross-origin isolation
+           (<code>SharedArrayBuffer</code> indisponível).<br/>
+           <span style="color:var(--muted);font-size:11px">
+             Configure <code>chess.cross-origin-isolation=true</code> em
+             <code>application.properties</code>, reinicie o Spring Boot e
+             recarregue esta página.
+           </span>
+         </div>`;
+    document.getElementById('engine-select').value = engineKey;  // reverte
+    return;
+  }
+
+  engineKey = newKey;
+  // Desliga e descarta a instância atual; ensureLocalEngine() recria
+  if (localEngine) {
+    try { localEngine.terminate(); } catch (_) {}
+    localEngine = null;
+  }
+  if (engineOn) {
+    showEngineThinking(true);
+    document.getElementById('engine-output').innerHTML =
+        '<div style="color:var(--muted);font-size:11px">Trocando engine para: '
+        + esc(cfg ? cfg.label : newKey) + '… (download na 1ª vez pode demorar)</div>';
+    try {
+      await ensureLocalEngine();
+      scheduleEngineAnalysis(true);
+    } catch (e) {
+      document.getElementById('engine-output').innerHTML =
+          `<div style="color:var(--red);font-size:12px">❌ Falha ao carregar ${esc(newKey)}: ${esc(e?.message || e)}</div>`;
+    }
+  }
+}
+
+/**
+ * Habilita/desabilita visualmente o controle de Threads conforme o
+ * build atual suporta multi-thread (Stockfish nativo só usa Threads
+ * em builds compilados com pthreads + COOP/COEP no servidor).
+ */
+function updateThreadsAvailability() {
+  const lbl = document.getElementById('engine-threads-lbl');
+  if (!lbl) return;
+  const info = localEngine ? localEngine.getEngineInfo() : { multiThread: false };
+  const isMulti = !!info.multiThread;
+  lbl.classList.toggle('disabled', !isMulti);
+  lbl.title = isMulti
+      ? 'Threads: número de núcleos da CPU usados pelo Stockfish'
+      : 'O build atual é single-thread; Threads não tem efeito';
+}
+
+/** Mostra ou esconde o botão "+ aprofundar análise". */
+function showDeeperButton(show) {
+  const btn = document.getElementById('btn-engine-deeper');
+  if (!btn) return;
+  if (show && engineDepth < 60) {
+    btn.style.display = '';
+    btn.classList.remove('exhausted');
+    btn.textContent = '+ aprofundar análise (atual: d' + engineDepth + ')';
+  } else if (show) {
+    // Já no tier máximo
+    btn.style.display = '';
+    btn.classList.add('exhausted');
+    btn.textContent = '✓ análise no limite máximo (d' + engineDepth + ')';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+/**
+ * "+ aprofundar análise" — sobe ao próximo tier de profundidade (estilo lichess)
+ * e relança a análise na posição atual. Tiers: 25 → 30 → 35 → 40 → 60.
+ */
+function extendEngineAnalysis() {
+  const next = ENGINE_DEPTH_TIERS.find(t => t > engineDepth);
+  if (next == null) return; // já está no máximo
+  engineDepth = next;
+  document.getElementById('engine-depth-val').textContent = engineDepth;
+  showDeeperButton(false);
   if (engineOn) scheduleEngineAnalysis(true);
 }
 
@@ -1430,59 +1753,150 @@ function changeEngineLines(delta) {
 function scheduleEngineAnalysis(immediate) {
   if (!engineOn) return;
   if (engineDebounce) clearTimeout(engineDebounce);
-  engineDebounce = setTimeout(runEngineAnalysis, immediate ? 60 : 250);
+  engineDebounce = setTimeout(runEngineAnalysis, immediate ? 60 : 200);
 }
 
-/** Abre (ou reabre) o stream SSE da engine para a posição atual. */
-function runEngineAnalysis() {
+/** Reinicia a análise local na posição atual. */
+async function runEngineAnalysis() {
   if (!engineOn) return;
   const fen = (mode === 'free') ? freeFen : (positions[currentPly] || START_FEN);
   if (!fen) return;
 
-  stopEngineStream();
-  showEngineThinking(true);
-  clearEngineLines();
+  // Posição mudou — para a profunda anterior, se houver
+  stopDeepAnalysis();
+  showDeeperButton(false);
 
-  const params = new URLSearchParams({ fen, depth: engineDepth, lines: engineLines });
-  engineEvtSrc = new EventSource(`/api/engine/stream?${params}`);
+  try {
+    const eng = await ensureLocalEngine();
+    eng.setMultiPv(engineLines);
+    eng.setThreads(engineThreads);
+    eng.setHash(engineHashMb);
 
-  engineEvtSrc.addEventListener('ENGINE_UPDATE', e => {
-    const data = JSON.parse(e.data);
-    renderEngineLines(data, fen);
-    document.getElementById('engine-depth-badge').textContent =
-        `d${data.depth} / d${engineDepth}`;
-    showEngineThinking(true); // ainda calculando
-  });
+    showEngineThinking(true);
+    clearEngineLines();
+    clearEngineExplain();
 
-  engineEvtSrc.addEventListener('ENGINE_DONE', () => {
-    showEngineThinking(false);
-    document.getElementById('engine-depth-badge').textContent =
-        `✓ d${engineDepth}`;
-    stopEngineStream();
-  });
+    lastEngineFen   = fen;
+    lastEngineDepth = 0;
 
-  engineEvtSrc.addEventListener('ENGINE_ERROR', e => {
-    const data = JSON.parse(e.data);
+    // Estilo lichess: roda até a profundidade-tier; ao terminar mostra "+"
+    // O usuário sobe os tiers manualmente (25 → 30 → 35 → 40 → 60).
+    eng.startDepth(fen, engineDepth);
+
+    // O explain fica disponível assim que tivermos algum resultado
+    document.getElementById('engine-explain-section').style.display = '';
+  } catch (e) {
     showEngineThinking(false);
     document.getElementById('engine-output').innerHTML =
-        `<div style="color:var(--red);font-size:12px">❌ ${esc(data.message)}</div>`;
-    stopEngineStream();
+        `<div style="color:var(--red);font-size:12px">❌ ${esc(e?.message || e)}</div>`;
+  }
+}
+
+// ── Análise Profunda (servidor) ─────────────────────────────
+/**
+ * Dispara uma análise mais profunda no Stockfish do servidor (depth 28).
+ * O resultado aparece numa caixa separada, abaixo do engine local.
+ */
+async function runDeepAnalysis() {
+  const fen = (mode === 'free') ? freeFen : (positions[currentPly] || START_FEN);
+  if (!fen) return;
+
+  // Verifica se o Stockfish do backend está pronto
+  try {
+    const st = await fetch('/api/stockfish/status').then(r => r.json());
+    if (!st.ready) {
+      showDeepOutput(`<div style="color:var(--yellow);font-size:12px">⚠️ Configure o Stockfish do servidor no painel à esquerda primeiro.</div>`, true);
+      return;
+    }
+  } catch (e) {
+    showDeepOutput(`<div style="color:var(--red);font-size:12px">❌ Erro ao consultar status do servidor.</div>`, true);
+    return;
+  }
+
+  stopDeepAnalysis();
+  const btn = document.getElementById('btn-deep');
+  btn.disabled = true;
+  btn.textContent = '⏳ Analisando no servidor…';
+  showDeepOutput(`<div style="color:var(--muted);font-size:11px">Conectando ao servidor…</div>`, true);
+
+  const deepDepth = 28;
+  const params = new URLSearchParams({ fen, depth: deepDepth, lines: engineLines });
+  deepAnalysisEvtSrc = new EventSource(`/api/engine/stream?${params}`);
+
+  deepAnalysisEvtSrc.addEventListener('ENGINE_UPDATE', e => {
+    const data = JSON.parse(e.data);
+    showDeepOutput(renderDeepHtml(fen, data, deepDepth, false), true);
   });
 
-  engineEvtSrc.onerror = () => {
-    // O EventSource reconecta automaticamente; fechamos para não acumular conexões.
-    showEngineThinking(false);
-    stopEngineStream();
+  deepAnalysisEvtSrc.addEventListener('ENGINE_DONE', () => {
+    btn.disabled = false;
+    btn.textContent = '⚡ Análise Profunda (servidor)';
+    // Marca o resultado final
+    const cur = document.getElementById('engine-deep-output');
+    if (cur && cur.firstChild) {
+      cur.querySelector('.deep-status')?.classList.add('done');
+    }
+    stopDeepAnalysis();
+  });
+
+  deepAnalysisEvtSrc.addEventListener('ENGINE_ERROR', e => {
+    let msg = 'erro desconhecido';
+    try { msg = JSON.parse(e.data).message || msg; } catch(_) {}
+    showDeepOutput(`<div style="color:var(--red);font-size:12px">❌ ${esc(msg)}</div>`, true);
+    btn.disabled = false;
+    btn.textContent = '⚡ Análise Profunda (servidor)';
+    stopDeepAnalysis();
+  });
+
+  deepAnalysisEvtSrc.onerror = () => {
+    btn.disabled = false;
+    btn.textContent = '⚡ Análise Profunda (servidor)';
+    stopDeepAnalysis();
   };
 }
 
-/** Fecha o EventSource e notifica o servidor para cancelar a análise. */
-function stopEngineStream() {
-  if (engineEvtSrc) {
-    engineEvtSrc.close();
-    engineEvtSrc = null;
+function stopDeepAnalysis() {
+  if (deepAnalysisEvtSrc) {
+    deepAnalysisEvtSrc.close();
+    deepAnalysisEvtSrc = null;
+    fetch('/api/engine/stop', { method: 'POST' }).catch(() => {});
   }
-  fetch('/api/engine/stop', { method: 'POST' }).catch(() => {});
+  const btn = document.getElementById('btn-deep');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '⚡ Análise Profunda (servidor)';
+  }
+}
+
+function showDeepOutput(html, show) {
+  const out = document.getElementById('engine-deep-output');
+  out.innerHTML = html;
+  out.style.display = show ? '' : 'none';
+}
+
+function renderDeepHtml(fen, data, maxDepth, final) {
+  const lines = data.lines || [];
+  let html = `<div class="deep-status${final ? ' done' : ''}" style="font-size:10px;color:var(--muted);margin-bottom:4px">
+                ${final ? '✓' : '⚙'} servidor d${data.depth} / d${maxDepth}
+              </div>`;
+  if (!lines.length) return html + `<div style="color:var(--muted);font-size:11px">—</div>`;
+
+  for (const line of lines) {
+    const evalClass = line.mateIn != null ? 'mate'
+                    : (line.eval != null && line.eval >  0.15) ? 'pos'
+                    : (line.eval != null && line.eval < -0.15) ? 'neg'
+                    : 'neu';
+    const sanFig  = uciListToSanFigurines(fen, (line.uciMoves || []).slice(0, 10));
+    const movesStr = sanFig.join(' ');
+    html += `<div class="engine-line">
+      <div class="engine-line-top">
+        <span class="engine-rank">${line.rank}.</span>
+        <span class="engine-eval ${evalClass}">${esc(line.evalStr)}</span>
+      </div>
+      <div class="engine-moves">${movesStr ? esc(movesStr) : '<span style="color:var(--muted)">—</span>'}</div>
+    </div>`;
+  }
+  return html;
 }
 
 function showEngineThinking(show) {
@@ -1494,8 +1908,92 @@ function clearEngineLines() {
   document.getElementById('engine-depth-badge').textContent = '';
 }
 
+function clearEngineExplain() {
+  document.getElementById('engine-explain-section').style.display = 'none';
+  document.getElementById('engine-explain-output').style.display  = 'none';
+  document.getElementById('engine-explain-output').innerHTML = '';
+  lastEngineFormatted = [];
+}
+
+/**
+ * Envia a posição + análise Stockfish ao LMStudio e exibe a explicação.
+ */
+async function explainPosition() {
+  if (!lastEngineFen || !lastEngineFormatted.length) return;
+
+  let moveSan = '';
+  let moveUci = '';
+  if (mode === 'nav' && currentGame && currentPly > 0) {
+    const m = currentGame.moves[currentPly - 1];
+    moveSan = m?.san || '';
+    moveUci = m?.uci || '';
+  } else if (mode === 'free' && freeMoves.length > 0) {
+    const last = freeMoves[freeMoves.length - 1];
+    moveSan = last.san || '';
+    moveUci = last.uci || '';
+  }
+
+  const btn = document.getElementById('btn-explain');
+  const out = document.getElementById('engine-explain-output');
+
+  btn.disabled    = true;
+  btn.textContent = '⏳ Consultando IA…';
+  out.style.display  = '';
+  out.innerHTML = '<div style="color:var(--accent);font-size:12px">Aguardando resposta do provedor de IA…</div>';
+
+  try {
+    const res = await fetch('/api/engine/explain', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fen:     lastEngineFen,
+        moveSan: moveSan,
+        moveUci: moveUci,
+        depth:   lastEngineDepth,
+        lines:   lastEngineFormatted
+      })
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      const providerLbl = formatProviderLabel(data.provider, data.model);
+      out.innerHTML = `<div class="engine-explain-text">${esc(data.explanation)}</div>
+                       <div class="engine-explain-meta" title="Provedor de IA usado">
+                         ${providerLbl}
+                       </div>`;
+    } else {
+      const providerLbl = data.provider ? `<div class="engine-explain-meta">${formatProviderLabel(data.provider, data.model)}</div>` : '';
+      out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ ${esc(data.message)}</div>${providerLbl}`;
+    }
+  } catch (e) {
+    out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ Erro ao conectar com o provedor de IA configurado.</div>`;
+    console.error('explain error', e);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '🤖 Explicar com IA';
+  }
+}
+
+/**
+ * Formata o rótulo "via Gemini (gemini-2.5-flash)" mostrado abaixo da
+ * explicação de IA. Mapeia siglas conhecidas para nomes amigáveis.
+ */
+function formatProviderLabel(provider, model) {
+  const p = (provider || '').toLowerCase();
+  const friendly = p === 'gemini'   ? 'Google Gemini'
+                 : p === 'lmstudio' ? 'LMStudio (local)'
+                 : p === 'groq'     ? 'Groq'
+                 : (provider || 'IA');
+  const icon = p === 'gemini'   ? '✦'
+             : p === 'lmstudio' ? '🖥'
+             : '🤖';
+  const modelTxt = model ? ` <code>${esc(model)}</code>` : '';
+  return `<span class="meta-pill">${icon} via <b>${esc(friendly)}</b>${modelTxt}</span>`;
+}
+
 /**
  * Renderiza as linhas MultiPV recebidas do servidor.
+ * Armazena também lastEngineFormatted para uso no explain.
  * @param {object} data  – payload ENGINE_UPDATE: { depth, lines: [{rank, evalStr, eval?, mateIn?, uciMoves}] }
  * @param {string} fen   – FEN da posição analisada (para converter UCI → SAN)
  */
@@ -1503,19 +2001,23 @@ function renderEngineLines(data, fen) {
   const out = document.getElementById('engine-output');
   if (!data.lines || !data.lines.length) { out.innerHTML = ''; return; }
 
+  lastEngineFormatted = [];
   let html = '';
   data.lines.forEach(line => {
     const evalClass = line.mateIn != null ? 'mate'
                     : (line.eval != null && line.eval >  0.15) ? 'pos'
                     : (line.eval != null && line.eval < -0.15) ? 'neg'
                     : 'neu';
-    const movesHtml = engineMovesHtml(fen, line.uciMoves || []);
+    const sanFig  = uciListToSanFigurines(fen, (line.uciMoves || []).slice(0, 10));
+    const movesStr = sanFig.join(' ');
+    lastEngineFormatted.push({ rank: line.rank, evalStr: line.evalStr, movesText: movesStr });
+
     html += `<div class="engine-line">
       <div class="engine-line-top">
         <span class="engine-rank">${line.rank}.</span>
         <span class="engine-eval ${evalClass}">${esc(line.evalStr)}</span>
       </div>
-      <div class="engine-moves">${movesHtml || '<span style="color:var(--muted)">—</span>'}</div>
+      <div class="engine-moves">${movesStr ? esc(movesStr) : '<span style="color:var(--muted)">—</span>'}</div>
     </div>`;
   });
   out.innerHTML = html;
@@ -1552,6 +2054,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('DOMContentLoaded', () => {
   initBoard();
   checkAnalyzeBtn();
+  initEnginePanel();
   fetch('/api/stockfish/status').then(r => r.json()).then(d => {
     if (d.ready) {
       const el = document.getElementById('sf-status');
@@ -1570,6 +2073,57 @@ document.addEventListener('DOMContentLoaded', () => {
     })
     .catch(e => console.error('Erro ao carregar config:', e));
 });
+
+/**
+ * Inicializa o painel "Engine ao vivo": popula o <select> de engines a
+ * partir de LocalEngine.listEngines() e sincroniza os valores iniciais
+ * dos controles (linhas, threads, hash, profundidade-tier).
+ *
+ * Builds multi-thread ficam desabilitados se o navegador não estiver em
+ * modo cross-origin isolated (sem SharedArrayBuffer).
+ */
+function initEnginePanel() {
+  const sel  = document.getElementById('engine-select');
+  const mtOk = window.LocalEngine && window.LocalEngine.isMultiThreadSupported
+            && window.LocalEngine.isMultiThreadSupported();
+
+  if (sel && window.LocalEngine && typeof window.LocalEngine.listEngines === 'function') {
+    sel.innerHTML = '';
+    for (const e of window.LocalEngine.listEngines()) {
+      const opt = document.createElement('option');
+      opt.value = e.key;
+      let label = e.label;
+      let title = e.description || '';
+      if (e.multiThread && !mtOk) {
+        opt.disabled = true;
+        label += '  (indisponível)';
+        title  = 'Requer cross-origin isolation (chess.cross-origin-isolation=true). ' + title;
+      }
+      opt.textContent = label;
+      opt.title       = title;
+      if (e.key === engineKey) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  // Estado inicial dos labels numéricos
+  const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
+  const linesEl   = document.getElementById('engine-lines-val');
+  const depthEl   = document.getElementById('engine-depth-val');
+  const threadsEl = document.getElementById('engine-threads-val');
+  const hashEl    = document.getElementById('engine-hash-val');
+  if (linesEl)   linesEl.textContent   = engineLines;
+  if (depthEl)   depthEl.textContent   = engineDepth;
+  if (threadsEl) threadsEl.textContent = engineThreads + ' / ' + cores;
+  if (hashEl)    hashEl.textContent    = engineHashMb;
+  updateThreadsAvailability();
+
+  // Aviso amigável se SAB não estiver disponível
+  if (!mtOk) {
+    console.info('[engine] SharedArrayBuffer indisponível — builds multi-thread desabilitados. ' +
+                 'Habilite chess.cross-origin-isolation=true no Spring Boot para liberar.');
+  }
+}
 </script>
 </body>
 </html>

@@ -1,6 +1,9 @@
 package com.chess.analyzer.controller;
 
 import com.chess.analyzer.model.StockfishResult;
+import com.chess.analyzer.service.AiExplainException;
+import com.chess.analyzer.service.AiExplainResult;
+import com.chess.analyzer.service.AiExplainService;
 import com.chess.analyzer.service.StockfishService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +14,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,7 +67,8 @@ public class LiveEngineController {
     /** Profundidades intermediárias utilizadas na análise progressiva. */
     private static final int[] DEPTH_CHECKPOINTS = { 6, 9, 12, 15, 18, 21, 24 };
 
-    private final StockfishService stockfishService;
+    private final StockfishService  stockfishService;
+    private final AiExplainService  aiExplainService;
 
     /** Versão atual do stream — incrementada a cada novo request para cancelar streams antigos. */
     private final AtomicLong streamVersion = new AtomicLong(0);
@@ -71,8 +76,10 @@ public class LiveEngineController {
     /** Emitter SSE ativo no momento. */
     private final AtomicReference<SseEmitter> activeEmitter = new AtomicReference<>();
 
-    public LiveEngineController(StockfishService stockfishService) {
-        this.stockfishService = stockfishService;
+    public LiveEngineController(StockfishService stockfishService,
+                                 AiExplainService aiExplainService) {
+        this.stockfishService  = stockfishService;
+        this.aiExplainService  = aiExplainService;
     }
 
     // ── Endpoints ────────────────────────────────────────────────────────────
@@ -130,6 +137,64 @@ public class LiveEngineController {
             try { old.complete(); } catch (Exception ignored) {}
         }
         return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
+     * Solicita ao LMStudio local uma explicação do lance/posição atual.
+     *
+     * <h2>Corpo da requisição (JSON)</h2>
+     * <pre>
+     * {
+     *   "fen":     "rnbqkb1r/...",        // FEN da posição após o lance
+     *   "moveSan": "♘f3",                  // Lance em SAN+figurines (opcional)
+     *   "moveUci": "g1f3",                  // Lance em UCI (opcional)
+     *   "depth":   18,                      // Profundidade da análise Stockfish
+     *   "lines": [                          // Linhas da engine (pré-formatadas pelo frontend)
+     *     { "rank": 1, "evalStr": "+0.35", "movesText": "♘f3 e5 d4 …" },
+     *     ...
+     *   ]
+     * }
+     * </pre>
+     *
+     * <h2>Resposta</h2>
+     * <pre>{ "ok": true, "explanation": "..." }</pre>
+     */
+    @PostMapping("/api/engine/explain")
+    public ResponseEntity<Map<String, Object>> explainPosition(
+            @RequestBody Map<String, Object> request) {
+
+        String fen     = (String) request.getOrDefault("fen",     "");
+        String moveSan = (String) request.getOrDefault("moveSan", "");
+        int    depth   = ((Number) request.getOrDefault("depth",  18)).intValue();
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> rawLines =
+                (List<Map<String, Object>>) request.getOrDefault("lines", List.of());
+
+        List<String> lineSummaries = rawLines.stream()
+                .map(l -> l.get("rank") + ". [" + l.get("evalStr") + "] " + l.get("movesText"))
+                .toList();
+
+        try {
+            AiExplainResult result = aiExplainService.explain(fen, moveSan, depth, lineSummaries);
+            return ResponseEntity.ok(Map.of(
+                    "ok",          true,
+                    "explanation", result.text(),
+                    "provider",    result.provider(),
+                    "model",       result.model()
+            ));
+        } catch (AiExplainException e) {
+            log.warn("Explain ({}) falhou: {}", aiExplainService.providerName(), e.getMessage());
+            return ResponseEntity.ok(Map.of(
+                    "ok",       false,
+                    "message",  e.getMessage(),
+                    "provider", aiExplainService.providerName()
+            ));
+        } catch (Exception e) {
+            log.error("Erro inesperado no explain ({}): {}", aiExplainService.providerName(), e.getMessage(), e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("ok", false, "message", "Erro interno: " + e.getMessage()));
+        }
     }
 
     // ── Análise ──────────────────────────────────────────────────────────────
@@ -221,7 +286,7 @@ public class LiveEngineController {
         if (mateIn != null) {
             sb.append(",\"mateIn\":").append(mateIn);
         } else if (eval != null) {
-            sb.append(",\"eval\":").append(String.format("%.4f", eval));
+            sb.append(",\"eval\":").append(String.format(Locale.US, "%.4f", eval));
         }
         sb.append(",\"uciMoves\":[");
         if (moves != null) {
@@ -237,6 +302,6 @@ public class LiveEngineController {
     private static String formatEval(Double eval, Integer mateIn) {
         if (mateIn != null) return (mateIn > 0 ? "+M" : "-M") + Math.abs(mateIn);
         if (eval == null) return "0.00";
-        return (eval >= 0 ? "+" : "") + String.format("%.2f", eval);
+        return (eval >= 0 ? "+" : "") + String.format(Locale.US, "%.2f", eval);
     }
 }

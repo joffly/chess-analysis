@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.springframework.ui.Model;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -90,7 +92,8 @@ public class GameController {
 	// ── UI ───────────────────────────────────────────────────────
 
 	@GetMapping("/")
-	public String index() {
+	public String index(Model model) {
+		model.addAttribute("lichessDefaultUser", appProperties.lichessDefaultUser());
 		return "index";
 	}
 
