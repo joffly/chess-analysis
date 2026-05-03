@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -156,6 +157,12 @@ public class GameAnalysisService {
 			}
 		}
 
+		// Semáforo limitando concorrência ao tamanho do pool do Stockfish.
+		// Evita criar centenas de virtual threads simultâneas que acumulam
+		// objetos Board/análise na heap e causam OutOfMemoryError.
+		final int poolSize = stockfishPool.getPoolSize();
+		final Semaphore semaphore = new Semaphore(poolSize);
+
 		// Fase 1: analisa todas as posições em paralelo
 		try {
 			List<CompletableFuture<Void>> futures = tasks.stream()
@@ -163,7 +170,12 @@ public class GameAnalysisService {
 						CompletableFuture<Void> future = new CompletableFuture<>();
 						Thread.ofVirtual().start(() -> {
 							try {
-								executeAnalysis(task, analyzedCounter, totalPlies);
+								semaphore.acquire();
+								try {
+									executeAnalysis(task, analyzedCounter, totalPlies);
+								} finally {
+									semaphore.release();
+								}
 								future.complete(null);
 							} catch (Exception e) {
 								log.error("Erro ao analisar lance: {}", e.getMessage());
@@ -335,7 +347,20 @@ public class GameAnalysisService {
 
 		Square from = Square.valueOf(uci.substring(0, 2).toUpperCase());
 		Square to   = Square.valueOf(uci.substring(2, 4).toUpperCase());
-		PieceType pieceType = board.getPiece(from).getPieceType();
+
+		Piece piece = board.getPiece(from);
+		// Guard: square vazia indica FEN inconsistente ou lance inválido do Stockfish.
+		// Retorna a notação UCI bruta em vez de lançar NPE.
+		if (piece == null || piece == Piece.NONE) {
+			log.warn("uciToSan: square de origem {} está vazia para UCI '{}' no FEN '{}'", from, uci, fen);
+			return uci;
+		}
+		PieceType pieceType = piece.getPieceType();
+		if (pieceType == null) {
+			log.warn("uciToSan: PieceType null para peça {} em {} (UCI '{}', FEN '{}')", piece, from, uci, fen);
+			return uci;
+		}
+
 		String fromStr = uci.substring(0, 2).toLowerCase();
 		String toStr   = uci.substring(2, 4).toLowerCase();
 
