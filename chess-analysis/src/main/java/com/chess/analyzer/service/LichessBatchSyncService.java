@@ -65,43 +65,46 @@ public class LichessBatchSyncService {
     /** Tempo máximo (ms) que o job aguardará a análise terminar (default 30 min). */
     private static final long ANALYSIS_TIMEOUT_MS = 30L * 60L * 1000L;
 
-    private final PgnService          pgnService;
-    private final PartidaRepository    partidaRepository;
-    private final PartidaSaveService   partidaSaveService;
-    private final GameAnalysisService  analysisService;
-    private final RadarCacheService    radarCache;
-    private final AppProperties        appProperties;
-    private final RestClient           restClient;
+    private final PgnService pgnService;
+    private final PartidaRepository partidaRepository;
+    private final PartidaSaveService partidaSaveService;
+    private final GameAnalysisService analysisService;
+    private final StockfishPoolService stockfishPool;
+    private final RadarCacheService radarCache;
+    private final AppProperties appProperties;
+    private final RestClient restClient;
 
     // ── Configuração específica do batch (via @Value para não inflar AppProperties) ──
     private final boolean batchEnabled;
-    private final String  batchUser;
-    private final int     batchDepth;
-    private final int     batchMaxGames;
+    private final String batchUser;
+    private final int batchDepth;
+    private final int batchMaxGames;
 
     /** Trava simples para impedir execuções sobrepostas do mesmo job. */
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public LichessBatchSyncService(PgnService pgnService,
-                                    PartidaRepository partidaRepository,
-                                    PartidaSaveService partidaSaveService,
-                                    GameAnalysisService analysisService,
-                                    RadarCacheService radarCache,
-                                    AppProperties appProperties,
-                                    @Value("${chess.batch.enabled:false}")    boolean batchEnabled,
-                                    @Value("${chess.batch.user:}")            String  batchUser,
-                                    @Value("${chess.batch.depth:10}")         int     batchDepth,
-                                    @Value("${chess.batch.max-games:50}")     int     batchMaxGames) {
-        this.pgnService         = pgnService;
-        this.partidaRepository  = partidaRepository;
+                                   PartidaRepository partidaRepository,
+                                   PartidaSaveService partidaSaveService,
+                                   GameAnalysisService analysisService,
+                                   StockfishPoolService stockfishPool,
+                                   RadarCacheService radarCache,
+                                   AppProperties appProperties,
+                                   @Value("${chess.batch.enabled:false}") boolean batchEnabled,
+                                   @Value("${chess.batch.user:}") String batchUser,
+                                   @Value("${chess.batch.depth:10}") int batchDepth,
+                                   @Value("${chess.batch.max-games:50}") int batchMaxGames) {
+        this.pgnService = pgnService;
+        this.partidaRepository = partidaRepository;
         this.partidaSaveService = partidaSaveService;
-        this.analysisService    = analysisService;
-        this.radarCache         = radarCache;
-        this.appProperties      = appProperties;
-        this.batchEnabled       = batchEnabled;
-        this.batchUser          = batchUser == null ? "" : batchUser.trim();
-        this.batchDepth         = batchDepth > 0 ? batchDepth : 10;
-        this.batchMaxGames      = batchMaxGames < 0 ? 0 : batchMaxGames;
+        this.analysisService = analysisService;
+        this.stockfishPool = stockfishPool;
+        this.radarCache = radarCache;
+        this.appProperties = appProperties;
+        this.batchEnabled = batchEnabled;
+        this.batchUser = batchUser == null ? "" : batchUser.trim();
+        this.batchDepth = batchDepth > 0 ? batchDepth : 10;
+        this.batchMaxGames = batchMaxGames < 0 ? 0 : batchMaxGames;
 
         this.restClient = RestClient.builder()
                 .baseUrl(LICHESS_BASE_URL)
@@ -197,6 +200,11 @@ public class LichessBatchSyncService {
         analysisService.setGames(novas);
         analysisService.setAnalysisDepth(depth);
 
+        if (!stockfishPool.isStarted()) {
+            log.warn("Sync batch: pool do Stockfish não está inicializado. Configure o caminho antes de iniciar a análise.");
+            return -1;
+        }
+
         boolean started = analysisService.startAnalysis();
         if (!started) {
             log.warn("Sync batch: análise não iniciou (já há outra em execução?). Tentará no próximo ciclo.");
@@ -248,10 +256,10 @@ public class LichessBatchSyncService {
     private String baixarPgnLichess(String username, int maxGames) {
         UriComponentsBuilder uri = UriComponentsBuilder
                 .fromUriString("/api/games/user/{username}")
-                .queryParam("tags",   "true")
+                .queryParam("tags", "true")
                 .queryParam("clocks", "false")
-                .queryParam("evals",  "false")
-                .queryParam("sort",   "dateDesc");
+                .queryParam("evals", "false")
+                .queryParam("sort", "dateDesc");
 
         if (maxGames > 0) {
             uri.queryParam("max", maxGames);
@@ -281,8 +289,8 @@ public class LichessBatchSyncService {
 
     // ── Getters para diagnóstico ───────────────────────────────────────────
 
-    public boolean isEnabled()       { return batchEnabled; }
-    public boolean isRunning()       { return running.get(); }
-    public String  getBatchUser()    { return batchUser; }
-    public int     getBatchDepth()   { return batchDepth; }
+    public boolean isEnabled() { return batchEnabled; }
+    public boolean isRunning() { return running.get(); }
+    public String getBatchUser() { return batchUser; }
+    public int getBatchDepth() { return batchDepth; }
 }
