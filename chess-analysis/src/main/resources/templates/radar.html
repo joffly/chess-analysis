@@ -1,0 +1,1102 @@
+<!DOCTYPE html>
+<html lang="pt-BR" xmlns:th="http://www.thymeleaf.org">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Chess Analyzer · Radar de Pontos Fracos</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet"/>
+
+<style>
+:root{
+  --bg:#0d1117;--panel:#161b22;--card:#1c2128;--hover:#21262d;
+  --border:#30363d;--text:#e6edf3;
+  /* dois níveis de "secundário" — soft é legível em fundos escuros (>4.5:1),
+     muted é só para legendas de eixo / labels muito menores */
+  --text-soft:#c0c8d3;
+  --muted:#a3acba;
+  --accent:#58a6ff;
+  --green:#3fb950;--red:#f85149;--yellow:#d29922;--purple:#bc8cff;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;min-height:100vh}
+
+/* ── Topbar ──────────────────────────────────────────────────────── */
+#topbar{
+  display:flex;align-items:center;gap:12px;padding:12px 24px;
+  background:var(--panel);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:50;
+}
+#topbar .brand{display:flex;align-items:center;gap:10px}
+#topbar .brand .ic{font-size:22px}
+#topbar .brand .name{font-weight:700;font-size:15px}
+#topbar .brand .sub{color:var(--text-soft);font-size:11px;font-weight:500}
+#topbar nav{display:flex;gap:6px;margin-left:14px}
+#topbar nav a{
+  color:var(--text-soft);text-decoration:none;font-size:12px;font-weight:600;
+  padding:5px 10px;border-radius:6px;transition:background .12s,color .12s;
+  display:flex;align-items:center;gap:5px;
+}
+#topbar nav a:hover{background:var(--hover);color:var(--text)}
+#topbar nav a.active{background:rgba(88,166,255,.15);color:var(--accent)}
+#topbar .spacer{flex:1}
+#topbar .filter-group{display:flex;align-items:center;gap:8px}
+.fc{background:var(--card);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:6px 10px;font-size:13px}
+.fc:focus{outline:none;border-color:var(--accent)}
+.btn-p{background:var(--accent);color:#000;font-weight:700;border:none;
+  border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px;transition:opacity .12s}
+.btn-p:hover{opacity:.85}
+.btn-s{background:var(--card);color:var(--text);font-weight:600;
+  border:1px solid var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px}
+.btn-s:hover{background:var(--hover)}
+
+/* ── Layout ──────────────────────────────────────────────────────── */
+#wrap{padding:20px 24px 40px;max-width:1500px;margin:0 auto}
+
+/* Status / loading */
+#load-banner{
+  display:none;padding:8px 14px;border-radius:8px;font-size:12px;
+  background:rgba(88,166,255,.12);color:var(--accent);
+  border:1px solid rgba(88,166,255,.4);margin-bottom:14px;
+}
+#load-banner.show{display:block}
+
+/* Resumo (KPI cards) */
+#summary{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:12px;margin-bottom:20px;
+}
+.kpi{
+  background:var(--panel);border:1px solid var(--border);border-radius:10px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:4px;position:relative;
+  transition:border-color .15s, transform .15s;
+}
+.kpi:hover{border-color:var(--accent);transform:translateY(-2px)}
+.kpi .lbl{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.kpi .val{font-size:28px;font-weight:800;line-height:1.1;font-variant-numeric:tabular-nums}
+.kpi .hint{font-size:11px;color:var(--text-soft);margin-top:2px}
+.kpi.accent .val{color:var(--accent)}
+.kpi.green .val{color:var(--green)}
+.kpi.red .val{color:var(--red)}
+.kpi.yellow .val{color:var(--yellow)}
+
+/* Grid principal */
+#grid{
+  display:grid;grid-template-columns:repeat(12,1fr);
+  gap:16px;
+}
+.card{
+  background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  padding:16px 18px;display:flex;flex-direction:column;gap:10px;min-height:280px;
+}
+.card.lg{grid-column:span 8}
+.card.md{grid-column:span 6}
+.card.sm{grid-column:span 4}
+.card.full{grid-column:span 12}
+@media (max-width: 1100px){
+  .card.lg, .card.md, .card.sm{grid-column:span 12}
+}
+
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.card-title{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text);
+  display:flex;align-items:center;gap:8px}
+.card-title .pill{font-size:10px;background:var(--card);color:var(--text-soft);
+  padding:2px 6px;border-radius:6px;border:1px solid var(--border);font-weight:600;letter-spacing:.04em}
+.card-sub{font-size:12px;color:var(--text-soft);line-height:1.5}
+
+/* Tabela compacta */
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th{font-weight:700;color:var(--text-soft);text-transform:uppercase;font-size:10px;
+  padding:6px 8px;border-bottom:1px solid var(--border);text-align:left;letter-spacing:.04em}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;
+  color:var(--text)}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:var(--hover)}
+.eco-tag{font-family:monospace;font-weight:700;color:var(--accent)}
+.bar{display:inline-block;height:8px;border-radius:4px;background:var(--accent);vertical-align:middle}
+
+/* Listas de patterns */
+.pat-list{display:flex;flex-direction:column;gap:8px}
+.pat{display:flex;align-items:center;gap:10px;padding:8px 10px;
+  background:var(--card);border-radius:8px;border:1px solid var(--border)}
+.pat .name{flex:1;font-size:12.5px;font-weight:600;color:var(--text)}
+.pat .count{font-size:15px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--accent)}
+.pat .sev{font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.05em}
+.sev.high{background:rgba(248,81,73,.18);color:var(--red)}
+.sev.med {background:rgba(210,153,34,.18);color:var(--yellow)}
+.sev.low {background:rgba(63,185,80,.18);color:var(--green)}
+
+/* Donut */
+.donut-wrap{display:flex;align-items:center;justify-content:center;gap:18px;flex:1;padding:6px 0}
+.donut{position:relative;width:140px;height:140px}
+.donut svg{transform:rotate(-90deg)}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center}
+.donut-center .v{font-size:26px;font-weight:800;color:var(--green)}
+.donut-center .l{font-size:10px;color:var(--text-soft);text-transform:uppercase;letter-spacing:.06em;
+  font-weight:700}
+.donut-legend{font-size:12px;display:flex;flex-direction:column;gap:7px;color:var(--text)}
+.donut-legend .row{display:flex;align-items:center;gap:8px}
+.donut-legend .row b{color:#fff;font-weight:700;font-variant-numeric:tabular-nums;margin-left:auto}
+.donut-legend .sw{width:11px;height:11px;border-radius:3px;flex-shrink:0}
+
+/* Tilt card */
+.tilt-meter{display:flex;flex-direction:column;gap:8px;flex:1;justify-content:center}
+.tilt-bar{height:14px;border-radius:8px;background:var(--card);overflow:hidden;border:1px solid var(--border)}
+.tilt-fill{height:100%;background:linear-gradient(90deg, var(--green) 0%, var(--yellow) 50%, var(--red) 100%);
+  width:0%;transition:width .5s ease}
+.tilt-pct{font-size:36px;font-weight:800;font-variant-numeric:tabular-nums;text-align:center}
+
+/* Heatmap */
+.board{
+  display:grid;grid-template-columns:repeat(8,1fr);width:min(420px,100%);
+  aspect-ratio:1/1;border:2px solid var(--border);border-radius:8px;overflow:hidden;
+  margin:0 auto;
+}
+.sq{position:relative;display:flex;align-items:flex-end;justify-content:flex-end;
+  font-size:9px;color:rgba(255,255,255,.5);padding:2px 4px;font-family:monospace}
+.sq.l{background:#1f2730}
+.sq.d{background:#161b22}
+.sq.heat{background:rgba(248,81,73,var(--w,0))}
+.heat-legend{display:flex;align-items:center;justify-content:center;gap:8px;
+  margin-top:10px;font-size:11.5px;color:var(--text-soft);font-weight:600}
+.heat-legend .grad{width:140px;height:10px;border-radius:5px;
+  background:linear-gradient(90deg, transparent, rgba(248,81,73,.85))}
+
+/* Treino */
+.training-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.train-card{background:var(--card);border:1px solid var(--border);border-radius:10px;
+  padding:14px;display:flex;flex-direction:column;gap:6px;
+  border-left:3px solid var(--purple)}
+.train-card .t{font-weight:700;font-size:14px;color:var(--text)}
+.train-card .m{font-size:12.5px;color:var(--text-soft);line-height:1.5}
+.train-card .e{font-size:12.5px;color:var(--text);font-weight:500;margin-top:6px;
+  padding-top:8px;border-top:1px dashed var(--border)}
+
+/* Scatter */
+#scatter-wrap{flex:1;min-height:220px;position:relative}
+#scatter-canvas{width:100%;height:240px}
+
+/* Empty */
+.empty{
+  text-align:center;color:var(--muted);font-size:12px;padding:24px;
+  border:1px dashed var(--border);border-radius:8px;background:rgba(88,166,255,.02);
+}
+
+/* ── Import / Sync card ──────────────────────────────────────────── */
+#import-card{
+  background:var(--panel);border:1px solid var(--border);border-radius:12px;
+  padding:14px 18px;margin-bottom:18px;
+  display:flex;flex-direction:column;gap:12px;
+  border-left:3px solid var(--accent);
+}
+#import-row{
+  display:flex;flex-wrap:wrap;align-items:end;gap:12px;
+}
+#import-row .field{display:flex;flex-direction:column;gap:4px}
+#import-row .field label{
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--text-soft);
+}
+#import-row .field input{
+  background:var(--card);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:7px 10px;font-size:13px;min-width:170px;
+}
+#import-row .field input:focus{outline:none;border-color:var(--accent)}
+#import-row .field input:disabled{opacity:.5;cursor:not-allowed}
+#import-row .field.narrow input{min-width:90px;width:120px}
+#import-row .grow{flex:1}
+.btn-import{
+  background:var(--accent);color:#000;border:none;border-radius:6px;
+  padding:9px 18px;font-weight:800;font-size:13px;cursor:pointer;
+  display:flex;align-items:center;gap:8px;
+  transition:opacity .12s, transform .12s;
+}
+.btn-import:hover:not(:disabled){opacity:.85;transform:translateY(-1px)}
+.btn-import:disabled{opacity:.45;cursor:not-allowed}
+
+#import-meta{font-size:11.5px;color:var(--text-soft);line-height:1.5}
+#import-meta b{color:var(--text)}
+
+/* Progress */
+#import-progress{display:none;flex-direction:column;gap:6px}
+#import-progress.show{display:flex}
+.progress-head{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  font-size:12px;color:var(--text);font-weight:600;
+}
+.progress-head .step{color:var(--accent);font-weight:700}
+.progress-head .pct{font-variant-numeric:tabular-nums;color:var(--text);font-weight:800}
+.progress-bar{
+  height:10px;background:var(--card);border:1px solid var(--border);
+  border-radius:6px;overflow:hidden;position:relative;
+}
+.progress-fill{
+  height:100%;
+  background:linear-gradient(90deg, var(--accent) 0%, var(--green) 100%);
+  width:0%;transition:width .25s ease;
+}
+.progress-fill.indeterminate{
+  width:35%;
+  animation:slide 1.4s linear infinite;
+  background:linear-gradient(90deg,
+    transparent 0%, var(--accent) 50%, transparent 100%);
+}
+@keyframes slide{
+  0%   {transform:translateX(-100%)}
+  100% {transform:translateX(300%)}
+}
+#import-counters{
+  font-size:11px;color:var(--text-soft);display:flex;gap:14px;flex-wrap:wrap;
+}
+#import-counters span b{color:var(--text)}
+
+#import-toast{
+  display:none;font-size:12px;padding:8px 12px;border-radius:6px;
+  font-weight:600;line-height:1.5;
+}
+#import-toast.show{display:block}
+#import-toast.ok {background:rgba(63,185,80,.15);  color:var(--green); border:1px solid rgba(63,185,80,.4)}
+#import-toast.err{background:rgba(248,81,73,.15);  color:var(--red);   border:1px solid rgba(248,81,73,.4)}
+#import-toast.inf{background:rgba(88,166,255,.12); color:var(--accent);border:1px solid rgba(88,166,255,.4)}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+
+<!-- ── Topbar ──────────────────────────────────────────────────────── -->
+<div id="topbar">
+  <div class="brand">
+    <span class="ic">📡</span>
+    <div>
+      <div class="name">Radar de Pontos Fracos</div>
+      <div class="sub">Diagnóstico do seu histórico de partidas</div>
+    </div>
+  </div>
+
+  <nav>
+    <a href="/"><i class="bi bi-arrow-left"></i> Análise</a>
+    <a href="/puzzles"><i class="bi bi-puzzle"></i> Puzzles</a>
+    <a href="/radar" class="active"><i class="bi bi-graph-up-arrow"></i> Radar</a>
+  </nav>
+
+  <div class="spacer"></div>
+
+  <div class="filter-group">
+    <input type="text" id="player-filter" class="fc" placeholder="Filtrar por jogador…" autocomplete="off"/>
+    <button class="btn-p" onclick="reloadAll()">
+      <i class="bi bi-arrow-clockwise"></i> Atualizar
+    </button>
+  </div>
+</div>
+
+<div id="wrap">
+
+  <div id="load-banner">⏳ Carregando dados do servidor…</div>
+
+  <!-- ── Resumo ──────────────────────────────────────────────────── -->
+  <div id="summary">
+    <div class="kpi accent">
+      <span class="lbl">Partidas</span>
+      <span class="val" id="kpi-partidas">—</span>
+      <span class="hint" id="kpi-analisadas">— analisadas</span>
+    </div>
+    <div class="kpi green">
+      <span class="lbl">Vitórias</span>
+      <span class="val" id="kpi-vitorias">—</span>
+      <span class="hint" id="kpi-winrate">—%</span>
+    </div>
+    <div class="kpi red">
+      <span class="lbl">Derrotas</span>
+      <span class="val" id="kpi-derrotas">—</span>
+      <span class="hint" id="kpi-empates">— empates</span>
+    </div>
+    <div class="kpi yellow">
+      <span class="lbl">Blunders</span>
+      <span class="val" id="kpi-blunders">—</span>
+      <span class="hint">total no período</span>
+    </div>
+  </div>
+
+  <!-- ── Import imediato (Lichess + Stockfish + DB) ──────────────── -->
+  <div id="import-card">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:18px">📥</span>
+      <div>
+        <div style="font-weight:700;font-size:14px">Baixar e analisar do Lichess</div>
+        <div id="import-meta">
+          As partidas serão analisadas pelo Stockfish na profundidade configurada para o batch
+          (<b id="import-depth">…</b>) e gravadas direto no banco.
+        </div>
+      </div>
+    </div>
+
+    <div id="import-row">
+      <div class="field grow">
+        <label for="imp-user">Jogador no Lichess</label>
+        <input type="text" id="imp-user" autocomplete="off" placeholder="ex: fjoffly"/>
+      </div>
+      <div class="field narrow">
+        <label for="imp-count">Últimas N partidas</label>
+        <input type="number" id="imp-count" min="1" max="500" value="20"/>
+      </div>
+      <button class="btn-import" id="imp-btn" onclick="startImport()">
+        <i class="bi bi-download"></i> Baixar e analisar
+      </button>
+    </div>
+
+    <div id="import-progress">
+      <div class="progress-head">
+        <span class="step" id="imp-step">Conectando…</span>
+        <span class="pct"  id="imp-pct">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill indeterminate" id="imp-fill"></div>
+      </div>
+      <div id="import-counters">
+        <span>Partidas: <b id="imp-games">—</b></span>
+        <span>Lances analisados: <b id="imp-moves">—</b></span>
+        <span>Profundidade: <b id="imp-depth-live">—</b></span>
+      </div>
+    </div>
+
+    <div id="import-toast"></div>
+  </div>
+
+  <!-- ── Grid principal ─────────────────────────────────────────── -->
+  <div id="grid">
+
+    <!-- 1. Padrões Táticos -->
+    <div class="card md">
+      <div class="card-head">
+        <div class="card-title">
+          🎯 Padrões Táticos
+          <span class="pill">onde mais erra</span>
+        </div>
+      </div>
+      <div class="card-sub">Erros recorrentes detectados nas partidas analisadas.</div>
+      <div class="pat-list" id="patterns-list">
+        <div class="empty">Aguardando dados…</div>
+      </div>
+    </div>
+
+    <!-- 2. Gestão de Vantagem -->
+    <div class="card sm">
+      <div class="card-head">
+        <div class="card-title">
+          🏆 Gestão de Vantagem
+          <span class="pill">+3 → resultado</span>
+        </div>
+      </div>
+      <div class="card-sub">Quando o Stockfish indica vantagem decisiva (≥ +3), você converte?</div>
+      <div class="donut-wrap">
+        <div class="donut">
+          <svg width="140" height="140" viewBox="0 0 36 36">
+            <circle cx="18" cy="18" r="15.915" fill="transparent"
+                    stroke="var(--card)" stroke-width="3.5"/>
+            <circle id="donut-arc" cx="18" cy="18" r="15.915" fill="transparent"
+                    stroke="var(--green)" stroke-width="3.5"
+                    stroke-dasharray="0 100" stroke-linecap="round"/>
+          </svg>
+          <div class="donut-center">
+            <div class="v" id="donut-pct">—</div>
+            <div class="l">conversão</div>
+          </div>
+        </div>
+        <div class="donut-legend" id="donut-legend">
+          <div class="row"><span class="sw" style="background:var(--green)"></span>Vitórias <b id="adv-w">—</b></div>
+          <div class="row"><span class="sw" style="background:var(--yellow)"></span>Empates <b id="adv-e">—</b></div>
+          <div class="row"><span class="sw" style="background:var(--red)"></span>Derrotas <b id="adv-l">—</b></div>
+          <div class="row" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);
+                                   font-size:11px;color:var(--text-soft);font-weight:600">
+            Total c/ vantagem: <b id="adv-total" style="color:var(--text);margin-left:6px">—</b>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Raio-X de Aberturas -->
+    <div class="card md">
+      <div class="card-head">
+        <div class="card-title">
+          📖 Raio-X de Aberturas
+          <span class="pill">por ECO</span>
+        </div>
+        <div id="nemesis-tag" style="display:none;font-size:11px;color:var(--red);font-weight:700">
+          ☠️ Nemesis: <span id="nemesis-eco">—</span>
+        </div>
+      </div>
+      <div class="card-sub" id="nemesis-desc">Desempenho por código ECO. A linha em vermelho indica a sua maior taxa de derrota.</div>
+      <div style="overflow:auto;flex:1">
+        <table class="tbl" id="openings-tbl">
+          <thead>
+            <tr>
+              <th>ECO</th><th>Abertura</th>
+              <th style="text-align:right">Jog.</th>
+              <th style="text-align:right">V</th>
+              <th style="text-align:right">D</th>
+              <th style="text-align:right">Blunders</th>
+              <th>Performance</th>
+            </tr>
+          </thead>
+          <tbody id="openings-body">
+            <tr><td colspan="7" class="empty">Aguardando dados…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 4a. Scatter Tempo × Precisão -->
+    <div class="card md">
+      <div class="card-head">
+        <div class="card-title">
+          ⏱️ Tempo × Precisão
+          <span class="pill">comportamento</span>
+        </div>
+      </div>
+      <div class="card-sub">Detecta apuro de tempo (esquerda) e lances impulsivos (canto direito-baixo).</div>
+      <div id="scatter-wrap">
+        <canvas id="scatter-canvas" width="600" height="240"></canvas>
+      </div>
+      <div class="card-sub" style="text-align:center">
+        <span style="color:var(--green)">●</span> bons lances &nbsp;
+        <span style="color:var(--red)">●</span> blunders
+      </div>
+    </div>
+
+    <!-- 4b. Alerta de Tilt -->
+    <div class="card sm">
+      <div class="card-head">
+        <div class="card-title">
+          ⚡ Alerta de Tilt
+          <span class="pill">após 1º blunder</span>
+        </div>
+      </div>
+      <div class="card-sub">Probabilidade de cometer um 2º blunder em até 5 lances.</div>
+      <div class="tilt-meter">
+        <div class="tilt-pct" id="tilt-pct">—</div>
+        <div class="tilt-bar"><div class="tilt-fill" id="tilt-fill"></div></div>
+        <div style="font-size:12px;color:var(--text-soft);text-align:center;line-height:1.5" id="tilt-detail">
+          aguardando dados…
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. Heatmap viso-espacial -->
+    <div class="card md">
+      <div class="card-head">
+        <div class="card-title">
+          🔥 Mapa de Calor
+          <span class="pill">casas onde mais erra</span>
+        </div>
+      </div>
+      <div class="card-sub">Casas mais "quentes" são destinos de lances classificados como blunder.</div>
+      <div id="board" class="board"></div>
+      <div class="heat-legend">
+        0 erros <div class="grad"></div> <span id="heat-max">—</span> erros
+      </div>
+    </div>
+
+    <!-- 6. Prescrição de Treino -->
+    <div class="card full">
+      <div class="card-head">
+        <div class="card-title">
+          🧠 Prescrição de Treino
+          <span class="pill">3 sugestões</span>
+        </div>
+      </div>
+      <div class="card-sub">Exercícios sugeridos com base nos diagnósticos acima.</div>
+      <div class="training-grid" id="training-grid">
+        <div class="empty" style="grid-column:1/-1">Aguardando dados…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/**
+ * Radar de Pontos Fracos — front-end.
+ *
+ * Toda chamada assíncrona usa o pattern fetch+JSON contra a API REST do
+ * Spring Boot. Os endpoints estão definidos em
+ * {@code com.chess.analyzer.controller.RadarController}.
+ */
+
+// ── Estado / utils ───────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt = n => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('pt-BR');
+const pct = n => (n == null || isNaN(n)) ? '—' : (Math.round(n) + '%');
+
+let currentPlayer = '';
+
+document.addEventListener('DOMContentLoaded', () => {
+  // Filtro de jogador (debounce simples)
+  let timer = null;
+  $('player-filter').addEventListener('input', e => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      currentPlayer = e.target.value.trim();
+      reloadAll();
+    }, 350);
+  });
+
+  buildBoard();
+  reloadAll();
+  loadBatchStatus(); // preenche jogador padrão e profundidade do batch
+
+  // Enter no campo "últimas N" também dispara o import
+  $('imp-count').addEventListener('keydown', e => { if (e.key === 'Enter') startImport(); });
+  $('imp-user').addEventListener('keydown',  e => { if (e.key === 'Enter') startImport(); });
+});
+
+/** Recarrega todos os blocos do dashboard em paralelo. */
+function reloadAll() {
+  $('load-banner').classList.add('show');
+  Promise.allSettled([
+    loadSummary(),
+    loadPatterns(),
+    loadAdvantage(),
+    loadOpenings(),
+    loadTimeVsPrecision(),
+    loadTilt(),
+    loadHeatmap(),
+    loadTraining(),
+  ]).finally(() => $('load-banner').classList.remove('show'));
+}
+
+/** Constrói a query string com o filtro de jogador. */
+function qs() {
+  return currentPlayer ? `?player=${encodeURIComponent(currentPlayer)}` : '';
+}
+
+// ── 0. Summary ───────────────────────────────────────────────────────────────
+async function loadSummary() {
+  // chamada assíncrona ao endpoint Spring Boot: GET /api/radar/summary
+  const r = await fetch(`/api/radar/summary${qs()}`);
+  const d = await r.json();
+  $('kpi-partidas').textContent  = fmt(d.partidas);
+  $('kpi-analisadas').textContent = `${fmt(d.analisadas)} analisadas`;
+  $('kpi-vitorias').textContent  = fmt(d.vitorias);
+  $('kpi-winrate').textContent   = `${pct(d.winRate)} winrate`;
+  $('kpi-derrotas').textContent  = fmt(d.derrotas);
+  $('kpi-empates').textContent   = `${fmt(d.empates)} empates`;
+  $('kpi-blunders').textContent  = fmt(d.blunders);
+}
+
+// ── 1. Padrões Táticos ───────────────────────────────────────────────────────
+async function loadPatterns() {
+  // chamada assíncrona: GET /api/radar/tactical-patterns
+  const r = await fetch(`/api/radar/tactical-patterns${qs()}`);
+  const list = await r.json();
+
+  const el = $('patterns-list');
+  if (!list || list.length === 0) {
+    el.innerHTML = '<div class="empty">Sem dados ainda.</div>';
+    return;
+  }
+
+  el.innerHTML = '';
+  list.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'pat';
+    div.innerHTML = `
+      <span class="name">${escHtml(p.pattern)}</span>
+      <span class="count">${fmt(p.count)}</span>
+      <span class="sev ${escHtml(p.severity)}">${labelSev(p.severity)}</span>
+    `;
+    el.appendChild(div);
+  });
+}
+
+function labelSev(s){return s==='high'?'crítico':s==='med'?'atenção':'ok'}
+
+// ── 2. Gestão de Vantagem ────────────────────────────────────────────────────
+async function loadAdvantage() {
+  // chamada assíncrona: GET /api/radar/advantage
+  const r = await fetch(`/api/radar/advantage${qs()}`);
+  const d = await r.json();
+
+  const conv = d.taxaConversao || 0;
+  $('donut-pct').textContent = pct(conv);
+  $('adv-w').textContent = fmt(d.vitorias);
+  $('adv-e').textContent = fmt(d.empates);
+  $('adv-l').textContent = fmt(d.derrotas);
+  $('adv-total').textContent = fmt(d.partidasComVantagem);
+
+  // Anima o arco
+  const arc = $('donut-arc');
+  arc.setAttribute('stroke-dasharray', `${Math.min(100, conv)} ${100 - Math.min(100, conv)}`);
+  arc.setAttribute('stroke', conv >= 70 ? 'var(--green)' : conv >= 40 ? 'var(--yellow)' : 'var(--red)');
+  $('donut-pct').style.color = conv >= 70 ? 'var(--green)' : conv >= 40 ? 'var(--yellow)' : 'var(--red)';
+}
+
+// ── 3. Raio-X de Aberturas ───────────────────────────────────────────────────
+async function loadOpenings() {
+  // chamada assíncrona: GET /api/radar/openings
+  const r = await fetch(`/api/radar/openings${qs()}`);
+  const d = await r.json();
+  const list = d.openings || [];
+  const nemesis = d.nemesis;
+
+  const body = $('openings-body');
+  if (list.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">Sem partidas no banco.</td></tr>';
+    $('nemesis-tag').style.display = 'none';
+    return;
+  }
+
+  // Para a barra de performance: 100% verde, 0% vermelho
+  const maxJ = Math.max(...list.map(x => x.partidas));
+
+  body.innerHTML = '';
+  list.slice(0, 12).forEach(o => {
+    const isNemesis = nemesis && o.eco === nemesis.eco;
+    const winRate = o.partidas === 0 ? 0 : (o.vitorias * 100 / o.partidas);
+    const barWidth = Math.max(4, (o.partidas / maxJ) * 100);
+
+    const tr = document.createElement('tr');
+    tr.style.background = isNemesis ? 'rgba(248,81,73,.07)' : '';
+    tr.innerHTML = `
+      <td><span class="eco-tag">${escHtml(o.eco)}</span></td>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+                 color:var(--text);font-weight:500"
+          title="${escHtml(o.opening || '')}">${escHtml(o.opening || '—')}</td>
+      <td style="text-align:right;color:var(--text);font-weight:600">${fmt(o.partidas)}</td>
+      <td style="text-align:right;color:var(--green);font-weight:700">${fmt(o.vitorias)}</td>
+      <td style="text-align:right;color:var(--red);font-weight:700">${fmt(o.derrotas)}</td>
+      <td style="text-align:right;color:var(--yellow);font-weight:700">${fmt(o.blunders)}</td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="bar" style="width:${barWidth}%;
+              background:${winRate >= 60 ? 'var(--green)' : winRate >= 40 ? 'var(--yellow)' : 'var(--red)'}"></div>
+          <span style="font-size:10px;color:var(--text-soft);min-width:34px;font-weight:600">${pct(winRate)}</span>
+        </div>
+      </td>
+    `;
+    body.appendChild(tr);
+  });
+
+  if (nemesis) {
+    $('nemesis-tag').style.display = '';
+    $('nemesis-eco').textContent = `${nemesis.eco} · ${nemesis.opening || '(sem nome)'}`;
+    $('nemesis-desc').textContent =
+      `Você perde ${pct(nemesis.loseRate)} das partidas com ${nemesis.eco}. Considere estudar essa linha.`;
+  }
+}
+
+// ── 4. Tempo × Precisão (scatter) ────────────────────────────────────────────
+async function loadTimeVsPrecision() {
+  // chamada assíncrona: GET /api/radar/time-vs-precision
+  const r = await fetch(`/api/radar/time-vs-precision${qs()}`);
+  const pts = await r.json();
+  drawScatter(pts || []);
+}
+
+/**
+ * Desenha o scatter de Tempo × Precisão sem dependências externas
+ * (usando apenas Canvas2D), para manter o tamanho da página enxuto.
+ */
+function drawScatter(points) {
+  const cv  = $('scatter-canvas');
+  const ctx = cv.getContext('2d');
+  const W   = cv.width = cv.clientWidth;
+  const H   = cv.height = 240;
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Eixos
+  const padL = 36, padB = 24, padT = 8, padR = 8;
+  ctx.strokeStyle = 'rgba(139,148,158,.4)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, H - padB);
+  ctx.lineTo(W - padR, H - padB);
+  ctx.stroke();
+
+  // Labels eixos (mais legíveis)
+  ctx.fillStyle = '#c0c8d3';
+  ctx.font = '11px Segoe UI, system-ui';
+  ctx.textAlign = 'right';
+  ctx.fillText('100', padL - 4, padT + 8);
+  ctx.fillText('50', padL - 4, padT + (H - padB - padT) / 2 + 4);
+  ctx.fillText('0', padL - 4, H - padB);
+  ctx.textAlign = 'center';
+  ctx.fillText('Tempo gasto (proxy seg.) →', W / 2, H - 6);
+  ctx.save();
+  ctx.translate(10, H / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('Precisão %', 0, 0);
+  ctx.restore();
+
+  if (!points.length) {
+    ctx.fillStyle = '#c0c8d3';
+    ctx.textAlign = 'center';
+    ctx.fillText('Sem lances analisados ainda.', W / 2, H / 2);
+    return;
+  }
+
+  // Determina escala X
+  const maxX = Math.max(60, ...points.map(p => p.x));
+  const x2px = x => padL + (x / maxX) * (W - padL - padR);
+  const y2px = y => padT + (1 - y / 100) * (H - padT - padB);
+
+  // Desenha pontos
+  points.forEach(p => {
+    ctx.beginPath();
+    ctx.arc(x2px(p.x), y2px(p.y), p.blunder ? 4.5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = p.blunder ? 'rgba(248,81,73,.85)' : 'rgba(63,185,80,.7)';
+    ctx.fill();
+  });
+}
+
+// ── 5. Tilt ──────────────────────────────────────────────────────────────────
+async function loadTilt() {
+  // chamada assíncrona: GET /api/radar/tilt
+  const r = await fetch(`/api/radar/tilt${qs()}`);
+  const d = await r.json();
+
+  const p = d.probabilidade || 0;
+  $('tilt-pct').textContent = pct(p);
+  $('tilt-fill').style.width = Math.min(100, p) + '%';
+  $('tilt-pct').style.color = p >= 50 ? 'var(--red)' : p >= 25 ? 'var(--yellow)' : 'var(--green)';
+  $('tilt-detail').innerHTML =
+    `${fmt(d.partidasComTilt)} de ${fmt(d.partidasComBlunder)} partidas tiveram um 2º blunder em até ${d.janela} lances.`
+    + `<br>Nível: <b style="color:${p>=50?'var(--red)':p>=25?'var(--yellow)':'var(--green)'}">`
+    + (d.nivel || '—').toUpperCase() + '</b>';
+}
+
+// ── 6. Heatmap ───────────────────────────────────────────────────────────────
+function buildBoard() {
+  const board = $('board');
+  board.innerHTML = '';
+  // Render top-down: 8a até 1h (perspectiva das brancas)
+  for (let r = 8; r >= 1; r--) {
+    for (let f = 0; f < 8; f++) {
+      const file = 'abcdefgh'[f];
+      const sq = file + r;
+      const div = document.createElement('div');
+      const dark = (r + f) % 2 === 0;
+      div.className = 'sq ' + (dark ? 'd' : 'l');
+      div.id = 'sq-' + sq;
+      div.dataset.sq = sq;
+      div.innerHTML = `<span>${sq}</span>`;
+      board.appendChild(div);
+    }
+  }
+}
+
+async function loadHeatmap() {
+  // chamada assíncrona: GET /api/radar/heatmap
+  const r = await fetch(`/api/radar/heatmap${qs()}`);
+  const d = await r.json();
+  const max = d.max || 1;
+  $('heat-max').textContent = fmt(d.max);
+
+  Object.entries(d.squares || {}).forEach(([sq, n]) => {
+    const el = $('sq-' + sq);
+    if (!el) return;
+    const w = max === 0 ? 0 : (n / max);
+    el.style.setProperty('--w', w.toFixed(3));
+    el.classList.toggle('heat', n > 0);
+    if (n > 0) {
+      el.title = `${sq}: ${n} blunder(s)`;
+    } else {
+      el.title = sq;
+    }
+  });
+}
+
+// ── 7. Treino ────────────────────────────────────────────────────────────────
+async function loadTraining() {
+  // chamada assíncrona: GET /api/radar/training
+  const r = await fetch(`/api/radar/training${qs()}`);
+  const list = await r.json();
+
+  const el = $('training-grid');
+  if (!list || list.length === 0) {
+    el.innerHTML = '<div class="empty" style="grid-column:1/-1">Sem sugestões disponíveis.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  list.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'train-card';
+    card.innerHTML = `
+      <div class="t">${escHtml(t.titulo)}</div>
+      <div class="m">${escHtml(t.motivo)}</div>
+      <div class="e">📝 ${escHtml(t.exercicio)}</div>
+    `;
+    el.appendChild(card);
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return (s == null ? '' : String(s))
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Re-render scatter no resize (responsividade)
+window.addEventListener('resize', () => {
+  // Re-busca apenas o último estado em cache não disponível; recarrega leve.
+  loadTimeVsPrecision();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Import imediato — POST /api/lichess/batch/run + SSE /api/analysis/events
+// ─────────────────────────────────────────────────────────────────────────────
+
+let importEventSource = null;
+let importStartReceived = false;
+let importWatchdog = null;
+
+/**
+ * Busca status do batch (depth, user padrão) para pré-preencher o formulário.
+ * Endpoint: GET /api/lichess/batch/status
+ */
+async function loadBatchStatus() {
+  try {
+    const r = await fetch('/api/lichess/batch/status');
+    const d = await r.json();
+    $('import-depth').textContent  = d.depth || '?';
+    $('imp-depth-live').textContent = d.depth || '?';
+    if (d.user && !$('imp-user').value) $('imp-user').value = d.user;
+  } catch (e) {
+    console.warn('Não foi possível carregar batch/status', e);
+    $('import-depth').textContent = '10';
+  }
+}
+
+/**
+ * Dispara o download + análise + persistência.
+ *  1. POST /api/lichess/batch/run   → ack imediato (job roda em background)
+ *  2. Abre SSE em /api/analysis/events para acompanhar o progresso
+ */
+async function startImport() {
+  const user  = $('imp-user').value.trim();
+  const count = parseInt($('imp-count').value || '20', 10);
+
+  if (!user) {
+    showToast('Informe o nome do jogador no Lichess.', 'err');
+    $('imp-user').focus();
+    return;
+  }
+  if (!count || count <= 0) {
+    showToast('Quantidade inválida. Use um número entre 1 e 500.', 'err');
+    return;
+  }
+
+  // Bloqueia UI
+  setImportRunning(true);
+  resetProgress();
+  showToast(`Iniciando download de ${count} partida(s) de ${user}…`, 'inf');
+
+  // 1. Dispara o batch em background (sem mandar depth → backend usa chess.batch.depth)
+  try {
+    const params = new URLSearchParams({ username: user, maxGames: String(count) });
+    const r = await fetch('/api/lichess/batch/run?' + params.toString(), { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      showToast(d.message || 'Falha ao iniciar.', 'err');
+      setImportRunning(false);
+      return;
+    }
+    $('imp-step').textContent = 'Baixando partidas do Lichess…';
+    $('imp-depth-live').textContent = d.depth;
+  } catch (e) {
+    showToast('Erro de rede ao iniciar o sync.', 'err');
+    setImportRunning(false);
+    return;
+  }
+
+  // 2. Conecta no SSE para acompanhar a análise
+  importStartReceived = false;
+  attachProgressStream(user);
+  startImportWatchdog();
+}
+
+/**
+ * Watchdog que polla /batch/status a cada 1.5s.
+ * Trata o caso "nenhuma partida nova encontrada" — o batch termina sem
+ * disparar análise, portanto nunca recebemos START via SSE.
+ */
+function startImportWatchdog() {
+  if (importWatchdog) clearInterval(importWatchdog);
+  let elapsed = 0;
+  importWatchdog = setInterval(async () => {
+    elapsed += 1.5;
+    try {
+      const r = await fetch('/api/lichess/batch/status');
+      const d = await r.json();
+      if (!d.running) {
+        // Batch terminou. Se nunca recebemos START, é porque não havia
+        // partidas novas (todas já estão no banco).
+        if (!importStartReceived) {
+          $('imp-step').textContent = 'Nenhuma partida nova encontrada';
+          showToast('ℹ Todas as partidas já estavam no banco — nenhuma nova foi baixada.', 'ok');
+          finishImport(true);
+          reloadAll();
+        }
+        clearInterval(importWatchdog);
+        importWatchdog = null;
+      } else if (!importStartReceived && elapsed >= 3) {
+        $('imp-step').textContent = 'Baixando partidas do Lichess…';
+      }
+    } catch (_) { /* tenta de novo */ }
+    // Hard timeout (~ 5 min sem nenhum START)
+    if (!importStartReceived && elapsed > 300) {
+      clearInterval(importWatchdog);
+      importWatchdog = null;
+      showToast('⚠ Tempo esgotado aguardando o início da análise.', 'err');
+      finishImport(false);
+    }
+  }, 1500);
+}
+
+/** Conecta ao SSE de análise — eventos: START, MOVE_ANALYZED, GAME_DONE, COMPLETE, ERROR. */
+function attachProgressStream(user) {
+  if (importEventSource) {
+    try { importEventSource.close(); } catch(_){}
+  }
+
+  // Pequeno delay para o backend baixar/parsear antes de o SSE receber START
+  $('imp-step').textContent = 'Aguardando análise iniciar…';
+
+  importEventSource = new EventSource('/api/analysis/events');
+
+  importEventSource.addEventListener('START', ev => {
+    importStartReceived = true;
+    const d = parseJson(ev.data);
+    $('imp-step').textContent = `Analisando ${d.totalGames} partida(s)…`;
+    $('imp-games').textContent = d.totalGames;
+    $('imp-moves').textContent = `0 / ${d.totalMoves || '?'}`;
+    if (d.depth) $('imp-depth-live').textContent = d.depth;
+    setProgressDeterminate();
+  });
+
+  importEventSource.addEventListener('MOVE_ANALYZED', ev => {
+    const d = parseJson(ev.data);
+    if (typeof d.progress === 'number') {
+      $('imp-fill').style.width = Math.min(100, d.progress) + '%';
+      $('imp-pct').textContent  = d.progress + '%';
+    }
+  });
+
+  importEventSource.addEventListener('GAME_DONE', ev => {
+    const d = parseJson(ev.data);
+    $('imp-step').textContent =
+      `Partida #${(d.gameIndex || 0) + 1} concluída — propagando avaliações…`;
+  });
+
+  importEventSource.addEventListener('COMPLETE', ev => {
+    $('imp-fill').style.width  = '100%';
+    $('imp-pct').textContent   = '100%';
+    $('imp-step').textContent  = 'Salvando no banco…';
+    showToast('Análise concluída — persistindo partidas no banco…', 'inf');
+
+    // Polla o status do batch até que running=false (persistência + cache invalidados)
+    pollBatchUntilDone();
+  });
+
+  importEventSource.addEventListener('ERROR', ev => {
+    const d = parseJson(ev.data);
+    showToast('❌ Erro durante a análise: ' + (d.message || 'falha desconhecida'), 'err');
+    finishImport(false);
+  });
+
+  importEventSource.onerror = (e) => {
+    // Conexão SSE caiu — pode ser término normal ou erro de rede
+    console.debug('SSE encerrado', e);
+  };
+}
+
+function setProgressDeterminate() {
+  const fill = $('imp-fill');
+  fill.classList.remove('indeterminate');
+  fill.style.width = '0%';
+}
+
+function resetProgress() {
+  $('import-progress').classList.add('show');
+  const fill = $('imp-fill');
+  fill.classList.add('indeterminate');
+  fill.style.width = '35%';
+  $('imp-pct').textContent = '0%';
+  $('imp-step').textContent = 'Conectando…';
+  $('imp-games').textContent = '—';
+  $('imp-moves').textContent = '—';
+}
+
+/**
+ * Após receber COMPLETE do SSE, a análise terminou mas o batch ainda
+ * está persistindo as partidas no banco. Esse polling no /batch/status
+ * espera o `running` voltar para false.
+ */
+async function pollBatchUntilDone() {
+  for (let i = 0; i < 90; i++) { // até ~90 segundos
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const r = await fetch('/api/lichess/batch/status');
+      const d = await r.json();
+      if (!d.running) {
+        $('imp-step').textContent = '✅ Sincronização concluída';
+        showToast('✅ Partidas baixadas, analisadas e gravadas no banco.', 'ok');
+        finishImport(true);
+        // Recarrega o dashboard para refletir os novos dados
+        reloadAll();
+        return;
+      }
+    } catch (_) { /* tenta de novo */ }
+  }
+  showToast('⚠ Tempo esgotado aguardando a finalização. Verifique os logs do servidor.', 'err');
+  finishImport(false);
+}
+
+function finishImport(success) {
+  setImportRunning(false);
+  if (importEventSource) {
+    try { importEventSource.close(); } catch(_){}
+    importEventSource = null;
+  }
+  if (importWatchdog) {
+    clearInterval(importWatchdog);
+    importWatchdog = null;
+  }
+  // Mantém o painel de progresso visível por alguns segundos no sucesso
+  if (!success) {
+    setTimeout(() => $('import-progress').classList.remove('show'), 4000);
+  }
+}
+
+function setImportRunning(running) {
+  $('imp-btn').disabled    = running;
+  $('imp-user').disabled   = running;
+  $('imp-count').disabled  = running;
+  $('imp-btn').innerHTML   = running
+      ? '<i class="bi bi-hourglass-split"></i> Em andamento…'
+      : '<i class="bi bi-download"></i> Baixar e analisar';
+}
+
+function showToast(msg, level) {
+  const el = $('import-toast');
+  el.textContent = msg;
+  el.classList.remove('ok','err','inf');
+  el.classList.add('show', level || 'inf');
+}
+
+function parseJson(s) {
+  try { return JSON.parse(s); } catch(e) { return {}; }
+}
+</script>
+</body>
+</html>

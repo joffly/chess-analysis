@@ -67,12 +67,12 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 .pi-side.w{background:#f0f0f0;color:#000}
 .pi-side.b{background:#1a1a1a;color:#f0f0f0;border:1px solid var(--border)}
 
-/* Right panel */
-#right{width:320px;min-width:260px;background:var(--panel);
+/* Right panel — agora mais largo para acomodar o painel IA */
+#right{width:420px;min-width:360px;background:var(--panel);
   border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 
 #feedback-box{padding:14px;border-bottom:1px solid var(--border);min-height:120px;
-  overflow-y:auto;max-height:340px}
+  overflow-y:auto;max-height:300px;flex-shrink:0}
 .fb-title{font-size:11px;font-weight:600;text-transform:uppercase;
   color:var(--muted);margin-bottom:6px}
 #fb-class{font-size:18px;font-weight:700;margin-bottom:6px}
@@ -136,16 +136,52 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
 #game-meta a{color:var(--accent);text-decoration:none}
 #game-meta a:hover{text-decoration:underline}
 
-/* Explain IA */
-#puzzle-explain-section{margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
-.btn-explain{width:100%;border:1px solid var(--accent);background:transparent;color:var(--accent);
-  border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;font-weight:600;transition:background .15s}
-.btn-explain:hover:not(:disabled){background:var(--accent);color:#000}
+/* Explain IA — agora em painel próprio dedicado, grande e bem visível */
+#puzzle-explain-section{
+  flex:1;display:flex;flex-direction:column;
+  padding:14px;border-top:1px solid var(--border);
+  background:linear-gradient(180deg, rgba(88,166,255,.04), transparent 60px);
+  min-height:0;  /* permite shrink dentro do flex */
+}
+.explain-header{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;margin-bottom:10px}
+.explain-title{display:flex;align-items:center;gap:6px;
+  font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--accent)}
+.explain-title .badge-ia{background:var(--accent);color:#000;font-size:9px;
+  padding:2px 6px;border-radius:4px;font-weight:800;letter-spacing:.04em}
+.btn-explain{border:1px solid var(--accent);background:transparent;color:var(--accent);
+  border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px;font-weight:700;
+  transition:background .15s, transform .15s; white-space:nowrap}
+.btn-explain:hover:not(:disabled){background:var(--accent);color:#000;transform:translateY(-1px)}
 .btn-explain:disabled{opacity:.4;cursor:default}
-#puzzle-explain-output{margin-top:6px;background:var(--card);border:1px solid var(--border);
-  border-radius:6px;padding:8px 10px;max-height:260px;overflow-y:auto;display:none}
-.puzzle-explain-text{white-space:pre-wrap;font-size:12px;line-height:1.55;
-  font-family:'Segoe UI',system-ui,sans-serif}
+#puzzle-explain-output{
+  flex:1;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:8px;padding:14px 16px;
+  overflow-y:auto;display:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.02);
+}
+#puzzle-explain-output.show{display:block}
+.puzzle-explain-text{
+  white-space:pre-wrap;font-size:14px;line-height:1.65;
+  font-family:'Segoe UI',system-ui,sans-serif;color:var(--text);
+}
+.explain-empty{
+  color:var(--muted);font-size:12px;line-height:1.55;
+  text-align:center;padding:24px 12px;
+  border:1px dashed var(--border);border-radius:8px;
+  background:rgba(88,166,255,.02);
+}
+.explain-loading{
+  color:var(--accent);font-size:13px;display:flex;align-items:center;gap:8px;
+  font-weight:600;
+}
+.explain-loading .spin{
+  display:inline-block;width:14px;height:14px;border:2px solid var(--accent);
+  border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* Header bar */
 #topbar{padding:8px 14px;border-bottom:1px solid var(--border);
@@ -226,6 +262,8 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
     <div id="topbar">
       <a href="/"><i class="bi bi-arrow-left"></i> Voltar à análise</a>
       <span style="color:var(--muted)">|</span>
+      <a href="/radar"><i class="bi bi-graph-up-arrow"></i> Radar de Pontos Fracos</a>
+      <span style="color:var(--muted)">|</span>
       <span style="font-size:12px;color:var(--muted)">
         Selecione um ECO à esquerda para gerar puzzles a partir dos blunders das partidas analisadas.
       </span>
@@ -266,14 +304,6 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
       <div id="fb-detail"></div>
       <div id="game-meta" style="display:none;margin-top:10px;padding-top:8px;
         border-top:1px solid var(--border);font-size:11px;color:var(--muted);line-height:1.6"></div>
-
-      <!-- Explicação por IA — aparece após o lance ser avaliado -->
-      <div id="puzzle-explain-section" style="display:none">
-        <button class="btn-explain" id="btn-puzzle-explain" onclick="explainPuzzlePosition()">
-          🤖 Explicar com IA
-        </button>
-        <div id="puzzle-explain-output"></div>
-      </div>
     </div>
 
     <div id="counter-box">
@@ -286,6 +316,25 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--text);
       <div id="orig-played">—</div>
       <div class="ol" style="margin-top:8px">Melhor lance (Stockfish, da análise)</div>
       <div id="orig-best">—</div>
+    </div>
+
+    <!-- ── PAINEL IA — agora ocupa toda a área restante do right panel ── -->
+    <div id="puzzle-explain-section" style="display:none">
+      <div class="explain-header">
+        <div class="explain-title">
+          <span>🤖 Análise da posição</span>
+          <span class="badge-ia">IA</span>
+        </div>
+        <button class="btn-explain" id="btn-puzzle-explain" onclick="explainPuzzlePosition()">
+          Explicar
+        </button>
+      </div>
+      <div id="puzzle-explain-output">
+        <div class="explain-empty">
+          Resolva o puzzle e clique em <b>Explicar</b> para receber<br>
+          uma análise detalhada da posição gerada pela IA.
+        </div>
+      </div>
     </div>
   </div>
 
@@ -597,8 +646,12 @@ function loadPuzzle(idx) {
 
   // Oculta seção de IA ao carregar novo puzzle
   document.getElementById('puzzle-explain-section').style.display = 'none';
-  document.getElementById('puzzle-explain-output').style.display  = 'none';
-  document.getElementById('puzzle-explain-output').innerHTML = '';
+  const outReset = document.getElementById('puzzle-explain-output');
+  outReset.classList.remove('show');
+  outReset.innerHTML = `<div class="explain-empty">
+        Resolva o puzzle e clique em <b>Explicar</b> para receber<br>
+        uma análise detalhada da posição gerada pela IA.
+      </div>`;
   lastExplainData = null;
 
   // Mostra metadados da partida (data, ratings, link) logo ao carregar o puzzle
@@ -1003,10 +1056,14 @@ function prepareExplain(puzzleFen, playedSan, depth, pvLines) {
 
   lastExplainData = { fen: puzzleFen, moveSan: playedSan, depth: depth || 14, lines };
 
-  // Limpa saída anterior e exibe botão
-  document.getElementById('puzzle-explain-output').style.display = 'none';
-  document.getElementById('puzzle-explain-output').innerHTML = '';
-  document.getElementById('puzzle-explain-section').style.display = '';
+  // Mostra a seção (com placeholder) e prepara para o clique
+  const out = document.getElementById('puzzle-explain-output');
+  out.classList.add('show');
+  out.innerHTML = `<div class="explain-empty">
+        Clique em <b>Explicar</b> para receber uma análise detalhada<br>
+        da posição gerada pela IA (LMStudio / Gemini).
+      </div>`;
+  document.getElementById('puzzle-explain-section').style.display = 'flex';
 }
 
 async function explainPuzzlePosition() {
@@ -1016,9 +1073,9 @@ async function explainPuzzlePosition() {
   const out = document.getElementById('puzzle-explain-output');
 
   btn.disabled    = true;
-  btn.textContent = '⏳ Consultando IA…';
-  out.style.display  = '';
-  out.innerHTML = '<div style="color:var(--accent);font-size:12px">Aguardando resposta do LMStudio…</div>';
+  btn.textContent = 'Consultando…';
+  out.classList.add('show');
+  out.innerHTML = '<div class="explain-loading"><span class="spin"></span> Aguardando resposta da IA…</div>';
 
   try {
     const res = await fetch('/api/engine/explain', {
@@ -1035,14 +1092,18 @@ async function explainPuzzlePosition() {
     if (data.ok) {
       out.innerHTML = `<div class="puzzle-explain-text">${esc(data.explanation)}</div>`;
     } else {
-      out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ ${esc(data.message)}</div>`;
+      out.innerHTML = `<div style="color:var(--red);font-size:13px;line-height:1.5">
+            <b>❌ Falha na análise por IA</b><br>${esc(data.message || 'Erro desconhecido.')}
+          </div>`;
     }
   } catch(e) {
-    out.innerHTML = `<div style="color:var(--red);font-size:12px">❌ Erro ao conectar com o LMStudio.</div>`;
+    out.innerHTML = `<div style="color:var(--red);font-size:13px">
+          ❌ Erro ao conectar com o serviço de IA.
+        </div>`;
     console.error('puzzle explain error', e);
   } finally {
     btn.disabled    = false;
-    btn.textContent = '🤖 Explicar com IA';
+    btn.textContent = 'Explicar';
   }
 }
 

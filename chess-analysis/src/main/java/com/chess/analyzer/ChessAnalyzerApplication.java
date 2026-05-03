@@ -4,9 +4,11 @@ import com.chess.analyzer.config.AppProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableConfigurationProperties(AppProperties.class)
+@EnableScheduling   // habilita @Scheduled (job batch de sincronização Lichess)
 public class ChessAnalyzerApplication {
 
     public static void main(String[] args) {

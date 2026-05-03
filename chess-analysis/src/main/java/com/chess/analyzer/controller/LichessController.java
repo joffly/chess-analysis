@@ -2,11 +2,13 @@ package com.chess.analyzer.controller;
 
 import com.chess.analyzer.exception.LichessApiException;
 import com.chess.analyzer.model.LichessImportResult;
+import com.chess.analyzer.service.LichessBatchSyncService;
 import com.chess.analyzer.service.LichessImportService;
 import com.chess.analyzer.service.PartidaSaveService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -42,10 +44,13 @@ public class LichessController {
 
     private static final Logger log = LoggerFactory.getLogger(LichessController.class);
 
-    private final LichessImportService lichessImportService;
+    private final LichessImportService    lichessImportService;
+    private final LichessBatchSyncService batchSyncService;
 
-    public LichessController(LichessImportService lichessImportService) {
+    public LichessController(LichessImportService lichessImportService,
+                             LichessBatchSyncService batchSyncService) {
         this.lichessImportService = lichessImportService;
+        this.batchSyncService     = batchSyncService;
     }
 
     /**
@@ -95,6 +100,63 @@ public class LichessController {
             return ResponseEntity.internalServerError().body(
                     Map.of("ok", false, "message", "Erro interno ao importar partidas: " + e.getMessage()));
         }
+    }
+
+    // ── Job Batch (sincronização agendada) ───────────────────────────────────
+
+    /**
+     * Dispara manualmente o job batch de sincronização (mesma rotina do
+     * {@code @Scheduled}). Útil para teste e para forçar a atualização
+     * sem aguardar o cron.
+     *
+     * @param username  opcional — sobrescreve {@code chess.batch.user}
+     * @param depth     opcional — sobrescreve {@code chess.batch.depth}
+     * @param maxGames  opcional — sobrescreve {@code chess.batch.max-games}
+     */
+    @PostMapping("/batch/run")
+    public ResponseEntity<Map<String, Object>> runBatchManually(
+            @RequestParam(required = false) String  username,
+            @RequestParam(required = false) Integer depth,
+            @RequestParam(required = false) Integer maxGames) {
+
+        String user = (username != null && !username.isBlank())
+                ? username.strip() : batchSyncService.getBatchUser();
+        if (user == null || user.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(Map.of("ok", false, "message",
+                            "Configure 'chess.batch.user' ou informe ?username= na requisição."));
+        }
+        if (batchSyncService.isRunning()) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "ok",      false,
+                    "message", "Já existe uma sincronização em andamento. Aguarde a conclusão."));
+        }
+        int d = (depth != null && depth > 0) ? depth : batchSyncService.getBatchDepth();
+        int m = (maxGames != null && maxGames >= 0) ? maxGames : 50;
+
+        // Roda em thread virtual para não travar o request HTTP — análise pode
+        // demorar minutos em depth alto. O cliente recebe ACK imediato.
+        Thread.ofVirtual().name("batch-manual-" + user).start(
+                () -> batchSyncService.runOnce(user, d, m));
+
+        return ResponseEntity.ok(Map.of(
+                "ok",        true,
+                "message",   "Sync batch iniciado em background.",
+                "username",  user,
+                "depth",     d,
+                "maxGames",  m
+        ));
+    }
+
+    /** Retorna o estado atual do batch — útil para a UI exibir um indicador. */
+    @GetMapping("/batch/status")
+    public Map<String, Object> batchStatus() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled",  batchSyncService.isEnabled());
+        m.put("running",  batchSyncService.isRunning());
+        m.put("user",     batchSyncService.getBatchUser());
+        m.put("depth",    batchSyncService.getBatchDepth());
+        return m;
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
